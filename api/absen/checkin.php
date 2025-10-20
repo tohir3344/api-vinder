@@ -7,8 +7,15 @@ header('Access-Control-Allow-Methods: POST, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, Authorization');
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(204); exit; }
 
-require_once __DIR__ . '/../koneksi.php';
-// mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT); // aktifkan saat debug
+require_once __DIR__ . '/../Koneksi.php';
+
+// ===== Jam kerja (samakan dengan client & upsert) =====
+const START_TIME = '07:40:00';
+const END_TIME   = '17:20:00';
+function isOutsideWorkingNow(): bool {
+  $now = date('H:i:s');
+  return ($now < START_TIME) || ($now >= END_TIME);
+}
 
 try {
   if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -19,6 +26,7 @@ try {
   $user_id = (int)($_POST['user_id'] ?? 0);
   $lat     = isset($_POST['lat']) ? (float)$_POST['lat'] : null;
   $lng     = isset($_POST['lng']) ? (float)$_POST['lng'] : null;
+  $alasan  = isset($_POST['alasan']) ? trim((string)$_POST['alasan']) : '';
 
   if ($user_id <= 0 || $lat === null || $lng === null) {
     http_response_code(400);
@@ -65,6 +73,41 @@ try {
   $sel->bind_param("i", $user_id);
   $sel->execute();
   $row = $sel->get_result()->fetch_assoc();
+
+  // panggil lembur/upsert
+  try {
+    $payload = json_encode([
+      'user_id' => $user_id,
+      'tanggal' => date('Y-m-d'),
+      'alasan'  => ($alasan !== '' ? $alasan : null),
+    ]);
+
+    if (function_exists('curl_init')) {
+      $ch = curl_init("http://localhost/penggajian/api/lembur/upsert.php");
+      curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+        CURLOPT_POSTFIELDS => $payload,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CONNECTTIMEOUT => 2,
+        CURLOPT_TIMEOUT => 5,
+      ]);
+      curl_exec($ch);
+      curl_close($ch);
+    } else {
+      $ctx = stream_context_create([
+        'http' => [
+          'method'  => 'POST',
+          'header'  => "Content-Type: application/json\r\n",
+          'content' => $payload,
+          'timeout' => 5,
+        ],
+      ]);
+      @file_get_contents("http://localhost/penggajian/api/lembur/upsert.php", false, $ctx);
+    }
+  } catch (\Throwable $e) {
+    // sengaja diabaikan: jangan gagalkan check-in karena lembur gagal
+  }
 
   echo json_encode(['success'=>true,'message'=>'Check-in OK','data'=>$row]);
 } catch (Throwable $e) {

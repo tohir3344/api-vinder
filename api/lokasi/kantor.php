@@ -6,3 +6,4 @@ require_once __DIR__ . '/../koneksi.php';
 
 $r = $conn->query("SELECT id, nama, lat, lng, radius_m FROM lokasi_kantor ORDER BY id LIMIT 1")->fetch_assoc();
 echo json_encode(['success'=>true,'data'=>$r]);
+    
