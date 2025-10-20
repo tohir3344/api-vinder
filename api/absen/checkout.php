@@ -1,107 +1,120 @@
 <?php
 declare(strict_types=1);
-header('Content-Type: application/json; charset=utf-8');
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: POST, OPTIONS');
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(200); exit; }
+error_reporting(E_ALL);
+ini_set('display_errors', 0);
 
-require_once __DIR__ . '/../Koneksi.php';
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Methods: POST, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
+header("Content-Type: application/json; charset=utf-8");
 
-// ===== Jam kerja (samakan dengan client & upsert) =====
-const START_TIME = '07:40:00';
-const END_TIME   = '13:00:00';
-function isOutsideWorkingNow(): bool {
-  $now = date('H:i:s');
-  return ($now < START_TIME) || ($now >= END_TIME);
-}
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(204); exit; }
 
-// mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
 try {
-  if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    http_response_code(405);
-    echo json_encode(['success'=>false,'message'=>'Method not allowed']); exit;
-  }
+  // ===== DB =====
+  $DB_NAME = "penggajian_db";
+  $conn = new mysqli("localhost", "root", "", $DB_NAME);
+  $conn->set_charset('utf8mb4');
 
-  $user_id = (int)($_POST['user_id'] ?? 0);
-  $lat = isset($_POST['lat']) ? (float)$_POST['lat'] : null;
-  $lng = isset($_POST['lng']) ? (float)$_POST['lng'] : null;
-  $alasan = isset($_POST['alasan']) ? trim((string)$_POST['alasan']) : '';
+  // ===== Input =====
+  $userId  = $_POST['user_id']   ?? null;
+  $absenId = $_POST['id_absen']  ?? null; // opsional
+  $tanggal = $_POST['tanggal']   ?? null; // opsional (YYYY-MM-DD)
+  // file: $_FILES['foto']
 
-  if ($user_id <= 0 || $lat === null || $lng === null) {
+  if (!$userId) {
     http_response_code(400);
-    echo json_encode(['success'=>false,'message'=>'user_id, lat, lng wajib']); exit;
+    echo json_encode(['error' => "Param 'user_id' wajib ada"]); exit;
+  }
+  if (!isset($_FILES['foto']) || !is_uploaded_file($_FILES['foto']['tmp_name'])) {
+    http_response_code(400);
+    echo json_encode(['error' => "File 'foto' wajib (multipart/form-data)"]); exit;
   }
 
-  // upload foto (opsional)
-  $fotoPath = null;
-  if (!empty($_FILES['foto']['tmp_name'])) {
-    $dir = __DIR__ . '/../uploads/absen';
-    if (!is_dir($dir)) mkdir($dir, 0777, true);
-    $fname = 'keluar_' . $user_id . '_' . date('Ymd_His') . '.jpg';
-    $dest = $dir . '/' . $fname;
-    if (!move_uploaded_file($_FILES['foto']['tmp_name'], $dest)) {
-      http_response_code(500);
-      echo json_encode(['success'=>false,'message'=>'Upload foto gagal']); exit;
-    }
-    $fotoPath = 'uploads/absen/' . $fname;
+  // ===== Waktu lokal (Asia/Jakarta) =====
+  $tz = new DateTimeZone('Asia/Jakarta');
+  $now = new DateTime('now', $tz);
+  if (!$tanggal) $tanggal = $now->format('Y-m-d');
+  $jamKeluar = $now->format('H:i:s');
+
+  // ===== Folder tujuan KELUAR: /penggajian/uploads/ =====
+  // File ini diasumsikan berada di /penggajian/api/absen/checkout.php
+  // Jadi root project = ../../ dari file ini
+  $projectRoot = realpath(__DIR__ . '/../../') ?: (__DIR__ . '/../../');
+  $uploadDir   = rtrim($projectRoot, '/\\') . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR;
+
+  if (!is_dir($uploadDir) && !mkdir($uploadDir, 0775, true)) {
+    throw new RuntimeException("Gagal membuat folder upload di: $uploadDir");
   }
 
-  // insert / update (unik di (user_id, tanggal))
-  $sql = "
-    INSERT INTO absen (user_id, tanggal, jam_keluar, keluar_lat, keluar_lng, foto_keluar)
-    VALUES (?, CURDATE(), CURTIME(), ?, ?, ?)
-    ON DUPLICATE KEY UPDATE
-      jam_keluar = COALESCE(jam_keluar, VALUES(jam_keluar)),
-      keluar_lat = COALESCE(keluar_lat, VALUES(keluar_lat)),
-      keluar_lng = COALESCE(keluar_lng, VALUES(keluar_lng)),
-      foto_keluar = COALESCE(foto_keluar, VALUES(foto_keluar))
-  ";
-  $stmt = $conn->prepare($sql);
-  $stmt->bind_param("idds", $user_id, $lat, $lng, $fotoPath);
-  $stmt->execute();
+  // ===== Simpan file keluar dengan prefix out_ =====
+  $allow = ['image/jpeg'=>'jpg','image/png'=>'png','image/webp'=>'webp','image/heic'=>'heic','image/avif'=>'avif'];
+  $mime = @mime_content_type($_FILES['foto']['tmp_name']) ?: '';
+  $ext  = $allow[$mime] ?? strtolower(pathinfo($_FILES['foto']['name'] ?? 'jpg', PATHINFO_EXTENSION) ?: 'jpg');
 
-  // panggil lembur/upsert
-  try {
-    $payload = json_encode([
-      'user_id' => $user_id,
-      'tanggal' => date('Y-m-d'),
-      'alasan'  => ($alasan !== '' ? $alasan : null),
-    ]);
+  $fname = 'out_' . date('Ymd_His') . '_' . mt_rand(1000,9999) . '.' . $ext;
+  $dest  = $uploadDir . $fname;
 
-    if (function_exists('curl_init')) {
-      $ch = curl_init("http://localhost/penggajian/api/lembur/upsert.php");
-      curl_setopt_array($ch, [
-        CURLOPT_POST => true,
-        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
-        CURLOPT_POSTFIELDS => $payload,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_CONNECTTIMEOUT => 2,
-        CURLOPT_TIMEOUT => 5,
-      ]);
-      curl_exec($ch);
-      curl_close($ch);
-    } else {
-      $ctx = stream_context_create([
-        'http' => [
-          'method'  => 'POST',
-          'header'  => "Content-Type: application/json\r\n",
-          'content' => $payload,
-          'timeout' => 5,
-        ],
-      ]);
-      @file_get_contents("http://localhost/penggajian/api/lembur/upsert.php", false, $ctx);
-    }
-  } catch (\Throwable $e) {
-    // jangan gagalkan checkout kalau upsert gagal
+  if (!move_uploaded_file($_FILES['foto']['tmp_name'], $dest)) {
+    http_response_code(400);
+    echo json_encode(['error' => 'Gagal menyimpan file upload']); exit;
   }
+
+  // ===== Cari/siapkan baris absen yang akan diupdate =====
+  $absenRowId = null;
+
+  // 1) jika id_absen dikirim & valid
+  if ($absenId && ctype_digit((string)$absenId)) {
+    $st = $conn->prepare("SELECT id FROM absen WHERE id=?");
+    $st->bind_param('i', $absenId);
+    $st->execute(); $st->bind_result($foundId);
+    if ($st->fetch()) $absenRowId = (int)$foundId;
+    $st->close();
+  }
+
+  // 2) fallback: cari berdasarkan (user_id, tanggal)
+  if (!$absenRowId) {
+    $st = $conn->prepare("SELECT id FROM absen WHERE user_id=? AND tanggal=? LIMIT 1");
+    $st->bind_param('is', $userId, $tanggal);
+    $st->execute(); $st->bind_result($foundId);
+    if ($st->fetch()) $absenRowId = (int)$foundId;
+    $st->close();
+  }
+
+  // 3) kalau belum ada, buat baris baru (supaya selalu bisa keluar)
+  if (!$absenRowId) {
+    $st = $conn->prepare("INSERT INTO absen (user_id, tanggal) VALUES (?, ?)");
+    $st->bind_param('is', $userId, $tanggal);
+    $st->execute();
+    $absenRowId = $st->insert_id;
+    $st->close();
+  }
+
+  // ===== Update kolom foto_keluar + jam_keluar (BACA: bukan foto_masuk) =====
+  $st = $conn->prepare("UPDATE absen SET foto_keluar=?, jam_keluar=? WHERE id=?");
+  $st->bind_param('ssi', $fname, $jamKeluar, $absenRowId);
+  $st->execute();
+  $st->close();
+
+  // ===== URL publik konfirmasi (buat dicek cepat dari app/browser) =====
+  $BASE_APP = "http://192.168.1.11/penggajian/"; // root publik
+  $publicUrl = rtrim($BASE_APP, '/') . '/uploads/' . $fname;
 
   echo json_encode([
-    'success' => true,
-    'message' => 'Check-out OK',
-    'foto'    => $fotoPath,
-  ]);
+    'success'     => true,
+    'mode'        => 'keluar',
+    'id_absen'    => $absenRowId,
+    'user_id'     => (int)$userId,
+    'tanggal'     => $tanggal,
+    'jam_keluar'  => $jamKeluar,
+    'file'        => $fname,
+    'target_dir'  => $uploadDir,
+    'public_url'  => $publicUrl
+  ], JSON_UNESCAPED_UNICODE);
+
 } catch (Throwable $e) {
   http_response_code(500);
-  echo json_encode(['success'=>false,'message'=>$e->getMessage()]);
+  echo json_encode(['error' => 'Server error: '.$e->getMessage()], JSON_UNESCAPED_UNICODE);
 }
