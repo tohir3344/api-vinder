@@ -1,5 +1,6 @@
 <?php
 declare(strict_types=1);
+
 header("Content-Type: application/json; charset=utf-8");
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
@@ -21,14 +22,15 @@ const END_CUTOFF   = '17:00';
 
 /** ===== Utils waktu ===== */
 function parseHm(string $hhmm): ?array {
-  if (!preg_match('/^\d{2}:\d{2}$/', $hhmm)) return null;
-  [$h,$m] = array_map('intval', explode(':',$hhmm));
-  if ($h<0||$h>23||$m<0||$m>59) return null;
-  return [$h,$m];
+  // Support "HH:mm" atau "HH:mm:ss" → ambil bagian menitnya
+  if (!preg_match('/^\d{2}:\d{2}(:\d{2})?$/', $hhmm)) return null;
+  [$h, $m] = array_map('intval', explode(':', substr($hhmm, 0, 5))); // ambil "HH:mm"
+  if ($h < 0 || $h > 23 || $m < 0 || $m > 59) return null;
+  return [$h, $m];
 }
 function toMinutes(string $hhmm): ?int {
-  $p = parseHm($hhmm); if(!$p) return null;
-  return $p[0]*60 + $p[1];
+  $p = parseHm($hhmm); if (!$p) return null;
+  return $p[0] * 60 + $p[1];
 }
 function minutesToHMM(int $minutes): string {
   $h = intdiv($minutes, 60);
@@ -44,8 +46,8 @@ function minutesToHMM(int $minutes): string {
 function computeOvertimeSplit(string $jamMasuk, string $jamKeluar): array {
   $in  = toMinutes($jamMasuk);
   $out = toMinutes($jamKeluar);
-  if ($in===null || $out===null) return [0, 0];
-  if ($out < $in) $out += 24*60; // shift lewat tengah malam
+  if ($in === null || $out === null) return [0, 0];
+  if ($out < $in) $out += 24 * 60; // shift lewat tengah malam
 
   $startCut = toMinutes(START_CUTOFF); // 480
   $endCut   = toMinutes(END_CUTOFF);   // 1020
@@ -62,7 +64,7 @@ function computeOvertimeSplit(string $jamMasuk, string $jamKeluar): array {
     $keluar = max(0, $out - max($endCut, $in));
   }
 
-  return [ $masuk, $keluar ];
+  return [$masuk, $keluar];
 }
 
 /** ===== Helper: cek kolom exist (sekali per request) ===== */
@@ -125,33 +127,33 @@ try {
     while ($r = $res->fetch_assoc()) {
       $r['id']          = (int)$r['id'];
       $r['user_id']     = (int)$r['user_id'];
-      $r['total_menit'] = (int)$r['total_menit'];
+      $r['total_menit'] = isset($r['total_menit']) ? (int)$r['total_menit'] : 0;
 
       // derive menit_masuk / menit_keluar kalau kolom belum ada
       $menit_masuk  = $HAS_MENIT_MASUK  && isset($r['total_menit_masuk'])  ? (int)$r['total_menit_masuk']  : null;
       $menit_keluar = $HAS_MENIT_KELUAR && isset($r['total_menit_keluar']) ? (int)$r['total_menit_keluar'] : null;
 
-      if ($menit_masuk===null || $menit_keluar===null) {
+      if ($menit_masuk === null || $menit_keluar === null) {
         // Hitung dari jam untuk memastikan respons lengkap
         [$mMasuk, $mKeluar] = computeOvertimeSplit((string)$r['jam_masuk'], (string)$r['jam_keluar']);
-        if ($menit_masuk===null)  $menit_masuk = $mMasuk;
-        if ($menit_keluar===null) $menit_keluar = $mKeluar;
+        if ($menit_masuk === null)  $menit_masuk = $mMasuk;
+        if ($menit_keluar === null) $menit_keluar = $mKeluar;
       }
 
       $r['total_menit_masuk']  = $menit_masuk;
       $r['total_menit_keluar'] = $menit_keluar;
 
-      // total_menit di respons harus konsisten = masuk+keluar (kalau DB beda, kita benarkan di output)
+      // total_menit konsisten = masuk + keluar
       $total_calc = $menit_masuk + $menit_keluar;
       $r['total_menit'] = $total_calc;
 
       // total_jam (kolom ada → pakai; kalau tidak → hitung dari total_calc)
-      $r['total_jam'] = ($HAS_JAM && isset($r['total_jam']) && $r['total_jam']!==null)
+      $r['total_jam'] = ($HAS_JAM && isset($r['total_jam']) && $r['total_jam'] !== null)
                         ? (string)$r['total_jam'] : minutesToHMM($total_calc);
 
       $rows[] = $r;
     }
-    echo json_encode(['rows'=>$rows], JSON_UNESCAPED_UNICODE);
+    echo json_encode(['rows' => $rows], JSON_UNESCAPED_UNICODE);
     exit;
   }
 
@@ -164,7 +166,6 @@ try {
     if (!empty($_GET['end']))     { $where[]='l.tanggal <= ?'; $params[]=$_GET['end'];   $types.='s'; }
     if (!empty($_GET['user_id'])) { $where[]='l.user_id = ?';  $params[]=(int)$_GET['user_id']; $types.='i'; }
 
-    // Kalau kolom split belum ada, sum akan dihitung dari jam per baris → jadi kita tarik semua rows lalu agregasi manual.
     $canSumInSql  = $HAS_MENIT_MASUK;
     $canSumOutSql = $HAS_MENIT_KELUAR;
 
@@ -198,7 +199,7 @@ try {
           'total_jam'           => minutesToHMM($total),
         ];
       }
-      echo json_encode(['rows'=>$rows], JSON_UNESCAPED_UNICODE);
+      echo json_encode(['rows' => $rows], JSON_UNESCAPED_UNICODE);
       exit;
     } else {
       // Fallback: tarik baris2 lalu agregasi di PHP
@@ -219,13 +220,13 @@ try {
       $agg = []; // user_id => [nama, masuk, keluar]
       while ($row = $res->fetch_assoc()) {
         $uid = (int)$row['user_id'];
-        if (!isset($agg[$uid])) $agg[$uid] = ['nama'=>$row['nama'], 'masuk'=>0, 'keluar'=>0];
+        if (!isset($agg[$uid])) $agg[$uid] = ['nama' => $row['nama'], 'masuk' => 0, 'keluar' => 0];
         [$mIn, $mOut] = computeOvertimeSplit((string)$row['jam_masuk'], (string)$row['jam_keluar']);
         $agg[$uid]['masuk']  += $mIn;
         $agg[$uid]['keluar'] += $mOut;
       }
       $rows=[];
-      foreach ($agg as $uid=>$v) {
+      foreach ($agg as $uid => $v) {
         $total = $v['masuk'] + $v['keluar'];
         $rows[] = [
           'user_id'            => $uid,
@@ -236,7 +237,7 @@ try {
           'total_jam'          => minutesToHMM($total),
         ];
       }
-      echo json_encode(['rows'=>$rows], JSON_UNESCAPED_UNICODE);
+      echo json_encode(['rows' => $rows], JSON_UNESCAPED_UNICODE);
       exit;
     }
   }
@@ -249,8 +250,8 @@ try {
    *     "id"?        : number (wajib untuk edit)
    *     "user_id"?   : number  | atau "nama": string
    *     "tanggal"    : "YYYY-MM-DD",
-   *     "jam_masuk"  : "HH:MM",
-   *     "jam_keluar" : "HH:MM",
+   *     "jam_masuk"  : "HH:MM"|"HH:MM:SS",
+   *     "jam_keluar" : "HH:MM"|"HH:MM:SS",
    *     "alasan"     : string
    *   }
    * }
@@ -281,8 +282,8 @@ try {
     $jam_keluar = (string)($data['jam_keluar'] ?? '');
     $alasan     = (string)($data['alasan'] ?? '');
 
-    $hasInOut = (parseHm($jam_masuk)!==null && parseHm($jam_keluar)!==null);
-    [$mMasuk, $mKeluar] = $hasInOut ? computeOvertimeSplit($jam_masuk, $jam_keluar) : [0,0];
+    $hasInOut = (parseHm($jam_masuk) !== null && parseHm($jam_keluar) !== null);
+    [$mMasuk, $mKeluar] = $hasInOut ? computeOvertimeSplit($jam_masuk, $jam_keluar) : [0, 0];
     $total_menit = $mMasuk + $mKeluar;
     $total_jam   = minutesToHMM($total_menit);
 
@@ -293,23 +294,28 @@ try {
                               total_menit, total_jam, total_menit_masuk, total_menit_keluar)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ");
-        $stmt->bind_param('issssisis', $user_id, $tanggal, $jam_masuk, $jam_keluar, $alasan,
-                          $total_menit, $total_jam, $mMasuk, $mKeluar);
+        $stmt->bind_param(
+          'issssisii', // i s s s s i s i i
+          $user_id, $tanggal, $jam_masuk, $jam_keluar, $alasan,
+          $total_menit, $total_jam, $mMasuk, $mKeluar
+        );
       } else {
         $stmt = $db->prepare("
           INSERT INTO lembur (user_id, tanggal, jam_masuk, jam_keluar, alasan, total_menit)
           VALUES (?, ?, ?, ?, ?, ?)
         ");
-        $stmt->bind_param('issssi', $user_id, $tanggal, $jam_masuk, $jam_keluar, $alasan, $total_menit);
+        $stmt->bind_param('issssi',
+          $user_id, $tanggal, $jam_masuk, $jam_keluar, $alasan, $total_menit
+        );
       }
       $stmt->execute();
       echo json_encode([
-        'success'=>true,
-        'id'=>$stmt->insert_id,
-        'total_menit_masuk'=>$mMasuk,
-        'total_menit_keluar'=>$mKeluar,
-        'total_menit'=>$total_menit,
-        'total_jam'=>$total_jam
+        'success'             => true,
+        'id'                  => $stmt->insert_id,
+        'total_menit_masuk'   => $mMasuk,
+        'total_menit_keluar'  => $mKeluar,
+        'total_menit'         => $total_menit,
+        'total_jam'           => $total_jam
       ], JSON_UNESCAPED_UNICODE);
       exit;
     }
@@ -324,36 +330,41 @@ try {
                             total_menit=?, total_jam=?, total_menit_masuk=?, total_menit_keluar=?
           WHERE id=?
         ");
-        $stmt->bind_param('issssisiii', $user_id, $tanggal, $jam_masuk, $jam_keluar, $alasan,
-                          $total_menit, $total_jam, $mMasuk, $mKeluar, $id);
+        $stmt->bind_param(
+          'issssisiii', // i s s s s i s i i i
+          $user_id, $tanggal, $jam_masuk, $jam_keluar, $alasan,
+          $total_menit, $total_jam, $mMasuk, $mKeluar, $id
+        );
       } else {
         $stmt = $db->prepare("
           UPDATE lembur SET user_id=?, tanggal=?, jam_masuk=?, jam_keluar=?, alasan=?, total_menit=?
           WHERE id=?
         ");
-        $stmt->bind_param('issssii', $user_id, $tanggal, $jam_masuk, $jam_keluar, $alasan, $total_menit, $id);
+        $stmt->bind_param('issssii',
+          $user_id, $tanggal, $jam_masuk, $jam_keluar, $alasan, $total_menit, $id
+        );
       }
       $stmt->execute();
 
       echo json_encode([
-        'success'=>true,
-        'total_menit_masuk'=>$mMasuk,
-        'total_menit_keluar'=>$mKeluar,
-        'total_menit'=>$total_menit,
-        'total_jam'=>$total_jam
+        'success'             => true,
+        'total_menit_masuk'   => $mMasuk,
+        'total_menit_keluar'  => $mKeluar,
+        'total_menit'         => $total_menit,
+        'total_jam'           => $total_jam
       ], JSON_UNESCAPED_UNICODE);
       exit;
     }
 
     http_response_code(400);
-    echo json_encode(['error'=>"Action '".($input['action'] ?? '')."' tidak dikenali"], JSON_UNESCAPED_UNICODE);
+    echo json_encode(['error' => "Action '".($input['action'] ?? '')."' tidak dikenali"], JSON_UNESCAPED_UNICODE);
     exit;
   }
 
   http_response_code(400);
-  echo json_encode(['error'=>"Action '$action' tidak dikenali"], JSON_UNESCAPED_UNICODE);
+  echo json_encode(['error' => "Action '$action' tidak dikenali"], JSON_UNESCAPED_UNICODE);
 
 } catch (Throwable $e) {
   http_response_code(500);
-  echo json_encode(['error'=>'Server error: '.$e->getMessage()], JSON_UNESCAPED_UNICODE);
+  echo json_encode(['error' => 'Server error: '.$e->getMessage()], JSON_UNESCAPED_UNICODE);
 }

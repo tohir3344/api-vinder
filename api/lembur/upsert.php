@@ -6,7 +6,7 @@ header("Access-Control-Allow-Methods: POST, OPTIONS");
 
 require_once __DIR__ . '/../Koneksi.php';
 
-const LEMBUR_START_CUTOFF = '10:00:00';
+const LEMBUR_START_CUTOFF = '11:00:00';
 const LEMBUR_END_CUTOFF   = '17:20:00'; // ganti sesuai kebijakan (sebelumnya kamu test '09:40:00')
 const DEFAULT_RATE        = 10000;      // upah per jam (flat), karena kolom upah_per_jam DIHAPUS
 

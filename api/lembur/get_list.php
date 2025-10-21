@@ -5,10 +5,14 @@ header("Content-Type: application/json; charset=utf-8");
 
 require_once __DIR__ . '/../Koneksi.php';
 
-/** ====== KONFIGURASI (samakan dengan upsert.php) ====== */
-const LEMBUR_START_CUTOFF = '10:00:00';
-const LEMBUR_END_CUTOFF   = '17:20:00'; // samakan dengan upsert.php
-const DEFAULT_RATE        = 10000;
+/**
+ * Konfigurasi server (single source of truth).
+ * Ubah di sini untuk testing; Absen.tsx akan ikut otomatis.
+ */
+const LEMBUR_START_CUTOFF = '08:00:00';
+const LEMBUR_END_CUTOFF   = '17:00:00';
+const RATE_PER_JAM        = 10000;
+const RATE_PER_MENIT      = RATE_PER_JAM / 60;
 
 try {
   $user_id = isset($_GET['user_id']) ? (int)$_GET['user_id'] : 0;
@@ -29,42 +33,57 @@ try {
 
   $whereSql = "WHERE ".implode(" AND ", $where);
 
-  // ekspresi fallback hitung menit (pagi + sore)
-  $calc_menit_expr = "
-    (
-      (CASE WHEN l.jam_masuk  IS NOT NULL AND l.jam_masuk  <  '".LEMBUR_START_CUTOFF."'
-            THEN GREATEST(0, TIMESTAMPDIFF(MINUTE, l.jam_masuk,  '".LEMBUR_START_CUTOFF."'))
-            ELSE 0 END)
-      +
-      (CASE WHEN l.jam_keluar IS NOT NULL AND l.jam_keluar >= '".LEMBUR_END_CUTOFF."'
-            THEN GREATEST(0, TIMESTAMPDIFF(MINUTE, '".LEMBUR_END_CUTOFF."', l.jam_keluar))
-            ELSE 0 END)
-    )
+  /**
+   * NORMALISASI JAM:
+   * - kosong ('') -> NULL
+   * - titik diganti titik dua (08.15 -> 08:15)
+   * - cast ke TIME()
+   */
+  $jam_masuk_time  = "TIME(REPLACE(NULLIF(l.jam_masuk,''),  '.', ':'))";
+  $jam_keluar_time = "TIME(REPLACE(NULLIF(l.jam_keluar,''), '.', ':'))";
+  $cut_in  = "TIME '".LEMBUR_START_CUTOFF."'";
+  $cut_out = "TIME '".LEMBUR_END_CUTOFF."'";
+
+  // menit lembur split (masuk & keluar)
+  $expr_masuk = "
+    CASE
+      WHEN $jam_masuk_time IS NOT NULL AND $jam_masuk_time < $cut_in
+        THEN GREATEST(0, TIMESTAMPDIFF(MINUTE, $jam_masuk_time, $cut_in))
+      ELSE 0
+    END
   ";
+  $expr_keluar = "
+    CASE
+      WHEN $jam_keluar_time IS NOT NULL AND $jam_keluar_time > $cut_out
+        THEN GREATEST(0, TIMESTAMPDIFF(MINUTE, $cut_out, $jam_keluar_time))
+      ELSE 0
+    END
+  ";
+  $expr_total = "($expr_masuk + $expr_keluar)";
 
   $sql = "
     SELECT
       l.id, l.user_id, l.tanggal, l.jam_masuk, l.jam_keluar, l.alasan,
 
-      -- pakai kolom tersimpan kalau ada; kalau kosong hitung on-the-fly
+      -- split menit (fallback kalkulasi on-the-fly)
+      $expr_masuk  AS menit_masuk_calc,
+      $expr_keluar AS menit_keluar_calc,
+
+      -- total menit (pakai tersimpan kalau ada; else kalkulasi)
       CASE
         WHEN COALESCE(l.total_menit,0) > 0 THEN l.total_menit
-        ELSE $calc_menit_expr
+        ELSE $expr_total
       END AS total_menit_final,
 
-      CASE
-        WHEN COALESCE(l.total_jam,0) > 0 THEN l.total_jam
-        ELSE FLOOR( ($calc_menit_expr) / 60 )
-      END AS total_jam_final,
-
+      -- upah dihitung per MENIT, bukan dibulatkan per jam
       CASE
         WHEN COALESCE(l.total_upah,0) > 0 THEN l.total_upah
-        ELSE ( FLOOR( ($calc_menit_expr) / 60 ) * ".DEFAULT_RATE." )
+        ELSE ROUND(($expr_total) * ".RATE_PER_MENIT.")
       END AS total_upah_final
 
     FROM lembur l
     $whereSql
-    ORDER BY l.tanggal DESC
+    ORDER BY l.tanggal DESC, l.id DESC
     LIMIT $limit
   ";
 
@@ -75,94 +94,67 @@ try {
 
   $rows = [];
   while ($r = $res->fetch_assoc()) {
+    // kalau kamu punya kolom terpisah di DB (total_menit_masuk/keluar), pakai jika > 0; else pakai kalkulasi
+    $menit_masuk  = isset($r['total_menit_masuk']) && (int)$r['total_menit_masuk'] > 0
+                  ? (int)$r['total_menit_masuk']
+                  : (int)$r['menit_masuk_calc'];
+
+    $menit_keluar = isset($r['total_menit_keluar']) && (int)$r['total_menit_keluar'] > 0
+                  ? (int)$r['total_menit_keluar']
+                  : (int)$r['menit_keluar_calc'];
+
+    $total_menit  = (int)$r['total_menit_final'];
+    $h = intdiv($total_menit, 60);
+    $m = $total_menit % 60;
+    $total_jam_str = $h . ":" . str_pad((string)$m, 2, "0", STR_PAD_LEFT);
+
     $rows[] = [
-      "id"            => (int)$r["id"],
-      "user_id"       => (int)$r["user_id"],
-      "tanggal"       => $r["tanggal"],
-      "jam_masuk"     => $r["jam_masuk"],
-      "jam_keluar"    => $r["jam_keluar"],
-      "alasan"        => $r["alasan"],
-      "total_menit"   => (int)$r["total_menit_final"],
-      "total_jam"     => (int)$r["total_jam_final"],
-      "total_upah"    => (int)$r["total_upah_final"],
+      "id"                 => (int)$r["id"],
+      "user_id"            => (int)$r["user_id"],
+      "tanggal"            => $r["tanggal"],
+      "jam_masuk"          => $r["jam_masuk"],
+      "jam_keluar"         => $r["jam_keluar"],
+      "alasan"             => $r["alasan"],
+
+      "total_menit_masuk"  => $menit_masuk,
+      "total_menit_keluar" => $menit_keluar,
+      "total_menit"        => $total_menit,
+      "total_jam"          => $total_jam_str,
+      "total_upah"         => (int)$r["total_upah_final"],
+
+      "rate_per_menit"     => RATE_PER_MENIT,
     ];
   }
 
-  // ===== Summary 7 hari terakhir — pakai kolom tersimpan; fallback kalau kosong
+  // Summary 7 hari (opsional, buat UI ringkas)
   $stmt2 = $conn->prepare("
-    SELECT
-      SUM(
-        CASE
-          WHEN COALESCE(l.total_menit,0) > 0 THEN l.total_menit
-          ELSE
-            (
-              (CASE WHEN l.jam_masuk  IS NOT NULL AND l.jam_masuk  <  '".LEMBUR_START_CUTOFF."'
-                    THEN GREATEST(0, TIMESTAMPDIFF(MINUTE, l.jam_masuk,  '".LEMBUR_START_CUTOFF."'))
-                    ELSE 0 END)
-              +
-              (CASE WHEN l.jam_keluar IS NOT NULL AND l.jam_keluar >= '".LEMBUR_END_CUTOFF."'
-                    THEN GREATEST(0, TIMESTAMPDIFF(MINUTE, '".LEMBUR_END_CUTOFF."', l.jam_keluar))
-                    ELSE 0 END)
-            )
-        END
-      ) AS menit_minggu,
-
-      SUM(
-        CASE
-          WHEN COALESCE(l.total_jam,0) > 0 THEN l.total_jam
-          ELSE FLOOR(
-            (
-              (CASE WHEN l.jam_masuk  IS NOT NULL AND l.jam_masuk  <  '".LEMBUR_START_CUTOFF."'
-                    THEN GREATEST(0, TIMESTAMPDIFF(MINUTE, l.jam_masuk,  '".LEMBUR_START_CUTOFF."'))
-                    ELSE 0 END)
-              +
-              (CASE WHEN l.jam_keluar IS NOT NULL AND l.jam_keluar >= '".LEMBUR_END_CUTOFF."'
-                    THEN GREATEST(0, TIMESTAMPDIFF(MINUTE, '".LEMBUR_END_CUTOFF."', l.jam_keluar))
-                    ELSE 0 END)
-            ) / 60
-          )
-        END
-      ) AS jam_minggu,
-
-      SUM(
-        CASE
-          WHEN COALESCE(l.total_upah,0) > 0 THEN l.total_upah
-          ELSE (
-            FLOOR(
-              (
-                (CASE WHEN l.jam_masuk  IS NOT NULL AND l.jam_masuk  <  '".LEMBUR_START_CUTOFF."'
-                      THEN GREATEST(0, TIMESTAMPDIFF(MINUTE, l.jam_masuk,  '".LEMBUR_START_CUTOFF."'))
-                      ELSE 0 END)
-                +
-                (CASE WHEN l.jam_keluar IS NOT NULL AND l.jam_keluar >= '".LEMBUR_END_CUTOFF."'
-                      THEN GREATEST(0, TIMESTAMPDIFF(MINUTE, '".LEMBUR_END_CUTOFF."', l.jam_keluar))
-                      ELSE 0 END)
-              ) / 60
-            ) * ".DEFAULT_RATE."
-          )
-        END
-      ) AS upah_minggu
+    SELECT SUM($expr_masuk) AS sum_in, SUM($expr_keluar) AS sum_out
     FROM lembur l
-    WHERE l.user_id = ?
-      AND l.tanggal >= CURRENT_DATE - INTERVAL 6 DAY
+    WHERE l.user_id = ? AND l.tanggal >= CURRENT_DATE - INTERVAL 6 DAY
   ");
   $stmt2->bind_param("i", $user_id);
   $stmt2->execute();
   $sumRow = $stmt2->get_result()->fetch_assoc();
-
-  $menit_minggu = (int)($sumRow["menit_minggu"] ?? 0);
-  $jam_minggu   = (int)($sumRow["jam_minggu"] ?? 0);
-  $upah_minggu  = (int)($sumRow["upah_minggu"] ?? 0);
+  $sum_in  = (int)($sumRow["sum_in"]  ?? 0);
+  $sum_out = (int)($sumRow["sum_out"] ?? 0);
+  $sum_total = $sum_in + $sum_out;
+  $sum_upah  = (int) round($sum_total * RATE_PER_MENIT);
 
   echo json_encode([
     "success" => true,
     "count"   => count($rows),
-    "data"    => $rows,
+    "rows"    => $rows,
+    "data"    => $rows, // alias untuk kompatibilitas
+
     "summary" => [
-      "menit_minggu" => $menit_minggu,
-      "jam_minggu"   => $jam_minggu,
-      "upah_minggu"  => $upah_minggu,
-      "rate"         => DEFAULT_RATE
+      "menit_masuk_7hari"  => $sum_in,
+      "menit_keluar_7hari" => $sum_out,
+      "total_menit_7hari"  => $sum_total,
+      "total_upah_7hari"   => $sum_upah,
+      "rate_per_jam"       => RATE_PER_JAM,
+      "rate_per_menit"     => RATE_PER_MENIT,
+      "cutoff_start"       => LEMBUR_START_CUTOFF,
+      "cutoff_end"         => LEMBUR_END_CUTOFF,
     ]
   ], JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
 
