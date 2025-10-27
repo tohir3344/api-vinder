@@ -1,170 +1,146 @@
 <?php
 declare(strict_types=1);
 header("Access-Control-Allow-Origin: *");
-header("Content-Type: application/json; charset=utf-8");
 header("Access-Control-Allow-Methods: POST, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
+header("Content-Type: application/json; charset=utf-8");
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(204); exit; }
 
 require_once __DIR__ . '/../Koneksi.php';
+require_once __DIR__ . '/config_lembur.php'; // <- pakai pusat jam kamu
 
-const LEMBUR_START_CUTOFF = '11:00:00';
-const LEMBUR_END_CUTOFF   = '17:20:00'; // ganti sesuai kebijakan (sebelumnya kamu test '09:40:00')
-const DEFAULT_RATE        = 10000;      // upah per jam (flat), karena kolom upah_per_jam DIHAPUS
+/* ===== Config ===== */
+if (!defined('LE_START_CUTOFF'))   define('LE_START_CUTOFF',   '08:00');
+if (!defined('LE_END_CUTOFF'))     define('LE_END_CUTOFF',     '17:00');
+if (!defined('LE_RATE_PER_JAM'))   define('LE_RATE_PER_JAM',   10000);
+if (!defined('LE_RATE_PER_MENIT')) define('LE_RATE_PER_MENIT', (float)LE_RATE_PER_JAM / 60.0);
 
-/** Normalisasi ke HH:MM:SS; terima '16.10' -> '16:10:00' */
-function toTimeOrNull($v) {
-  if (!isset($v)) return null;
-  $t = trim((string)$v);
-  if ($t === '') return null;
-  $t = str_replace('.', ':', $t); // dukung '16.10'
-  if (!preg_match('/^\d{1,2}:\d{1,2}(:\d{1,2})?$/', $t)) return null;
-  $parts = explode(':', $t);
-  $H = str_pad((string)($parts[0] ?? '0'), 2, '0', STR_PAD_LEFT);
-  $M = str_pad((string)($parts[1] ?? '0'), 2, '0', STR_PAD_LEFT);
-  $S = str_pad((string)($parts[2] ?? '0'), 2, '0', STR_PAD_LEFT);
-  return "$H:$M:$S";
+/* ===== Helpers ===== */
+function normHHMMSS($v){
+  if($v===null) return null;
+  $t=trim((string)$v); if($t==='') return null;
+  $t=str_replace('.',':',$t);
+  if(!preg_match('/^\d{1,2}:\d{1,2}(:\d{1,2})?$/',$t)) return null;
+  $p=explode(':',$t);
+  return sprintf('%02d:%02d:%02d',(int)($p[0]??0),(int)($p[1]??0),(int)($p[2]??0));
 }
-
-/** Konversi HH:MM:SS -> total menit (abaikan detik) */
-function toMinutes(string $hhmmss): int {
-  [$H,$M,$S] = array_map('intval', explode(':', $hhmmss));
-  return $H * 60 + $M;
+function dt($date,$hhmmss,$addDays=0){
+  $tz=new DateTimeZone('Asia/Jakarta');
+  $base=new DateTimeImmutable("$date $hhmmss",$tz);
+  return $addDays? $base->modify("+$addDays day") : $base;
 }
-
-/** Selisih menit pada tanggal tertentu (robust TZ) */
-function minutesDiff(string $date, string $t1, string $t2): int {
-  return (int) round( (strtotime("$date $t2") - strtotime("$date $t1")) / 60 );
+function minutesBetween(DateTimeImmutable $a, DateTimeImmutable $b){
+  $d=$b->getTimestamp()-$a->getTimestamp();
+  return $d>0? intdiv($d,60):0;
+}
+function isValidDateYmd($d){
+  if(!preg_match('/^\d{4}-\d{2}-\d{2}$/',$d)) return false;
+  [$y,$m,$da]=array_map('intval',explode('-',$d));
+  return checkdate($m,$da,$y);
 }
 
 try {
-  if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(200); exit; }
   if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
     echo json_encode(['success'=>false,'message'=>'Method not allowed']); exit;
   }
 
-  $raw = file_get_contents('php://input');
-  $json = json_decode($raw, true);
-  if (!is_array($json)) throw new Exception('Invalid JSON');
+  $j = json_decode(file_get_contents('php://input'), true);
+  if (!is_array($j)) throw new Exception('Invalid JSON');
 
-  $user_id    = (int)($json['user_id'] ?? 0);
-  $tanggal    = isset($json['tanggal']) ? trim((string)$json['tanggal']) : '';
-  $alasan     = array_key_exists('alasan', $json) ? ( ($json['alasan'] ?? '') !== '' ? trim((string)$json['alasan']) : null ) : null;
+  $user_id = (int)($j['user_id'] ?? 0);
+  $tanggal = trim((string)($j['tanggal'] ?? ''));
+  if ($user_id <= 0 || $tanggal === '') throw new Exception('user_id dan tanggal wajib');
+  if (!isValidDateYmd($tanggal)) throw new Exception('Format tanggal harus YYYY-MM-DD');
 
-  // kamu sudah hapus kolom upah_per_jam -> pakai DEFAULT_RATE
-  $rate       = DEFAULT_RATE;
+  $alasan        = array_key_exists('alasan', $j) ? (trim((string)$j['alasan']) ?: null) : null;
+  $alasan_keluar = array_key_exists('alasan_keluar', $j) ? (trim((string)$j['alasan_keluar']) ?: null) : null;
 
-  $jam_masuk  = toTimeOrNull($json['jam_masuk']  ?? null);
-  $jam_keluar = toTimeOrNull($json['jam_keluar'] ?? null);
+  // terima jam dari caller
+  $jam_masuk  = normHHMMSS($j['jam_masuk']  ?? null);
+  $jam_keluar = normHHMMSS($j['jam_keluar'] ?? null);
 
-  if ($user_id <= 0 || $tanggal === '') throw new Exception('user_id dan tanggal wajib diisi');
-
-  // Ambil jam dari tabel absen bila tidak dikirim / invalid
+  // fallback ke tabel absen kalau perlu
   if ($jam_masuk === null || $jam_keluar === null) {
-    $stmt = $conn->prepare("
-      SELECT jam_masuk, jam_keluar
-      FROM absen
-      WHERE user_id=? AND tanggal=?
-      ORDER BY id DESC
-      LIMIT 1
-    ");
-    $stmt->bind_param("is", $user_id, $tanggal);
-    $stmt->execute();
-    $res = $stmt->get_result();
-    if ($row = $res->fetch_assoc()) {
-      if ($jam_masuk  === null) $jam_masuk  = toTimeOrNull($row['jam_masuk'] ?? null);
-      if ($jam_keluar === null) $jam_keluar = toTimeOrNull($row['jam_keluar'] ?? null);
+    $q = $conn->prepare("SELECT jam_masuk, jam_keluar FROM absen WHERE user_id=? AND tanggal=? ORDER BY id DESC LIMIT 1");
+    $q->bind_param('is', $user_id, $tanggal);
+    $q->execute();
+    $abs = $q->get_result()->fetch_assoc();
+    $q->close();
+    if ($jam_masuk  === null) $jam_masuk  = normHHMMSS($abs['jam_masuk']  ?? null);
+    if ($jam_keluar === null) $jam_keluar = normHHMMSS($abs['jam_keluar'] ?? null);
+  }
+  if ($jam_masuk === null && $jam_keluar === null) throw new Exception('Tidak ditemukan jam_masuk/jam_keluar pada tanggal tsb');
+
+  $cutIn  = normHHMMSS(LE_START_CUTOFF);
+  $cutOut = normHHMMSS(LE_END_CUTOFF);
+  if ($cutIn === null || $cutOut === null) throw new Exception('Config cutoff tidak valid');
+
+  // hitung menit lembur
+  $menitMasuk = 0;
+  if ($jam_masuk) {
+    $dtMasuk = dt($tanggal, $jam_masuk);
+    $dtCutIn = dt($tanggal, $cutIn);
+    if ($dtMasuk < $dtCutIn) $menitMasuk = minutesBetween($dtMasuk, $dtCutIn);
+  }
+  $menitKeluar = 0;
+  if ($jam_keluar) {
+    $cross = strcmp($cutOut, $cutIn) <= 0; // end<=start → cutOut H+1
+    if (isset($dtMasuk)) {
+      $cand = dt($tanggal, $jam_keluar);
+      $dtKeluar = ($cand < $dtMasuk) ? dt($tanggal, $jam_keluar, 1) : $cand;
+    } else {
+      $dtKeluar = ($cross && strcmp($jam_keluar, $cutOut) < 0) ? dt($tanggal, $jam_keluar, 1) : dt($tanggal, $jam_keluar);
     }
+    $dtCutOut = $cross ? dt($tanggal, $cutOut, 1) : dt($tanggal, $cutOut);
+    if ($dtKeluar > $dtCutOut) $menitKeluar = minutesBetween($dtCutOut, $dtKeluar);
   }
 
-  if ($jam_masuk === null && $jam_keluar === null) {
-    throw new Exception('Tidak ditemukan jam_masuk/jam_keluar untuk tanggal tsb');
-  }
+  $total_menit      = max(0, $menitMasuk + $menitKeluar);
+  $total_upah_float = $total_menit * (float)LE_RATE_PER_MENIT;
+  $total_upah_int   = (int)round($total_upah_float); // kolom INT
+  $total_jam_dec    = round($total_menit / 60.0, 2); // kolom DECIMAL(6,2)
 
-  // ---- Hitung total menit lembur ----
-  $total_menit = 0;
-
-  if ($jam_masuk !== null) {
-    $inMin    = toMinutes($jam_masuk);
-    $startMin = toMinutes(LEMBUR_START_CUTOFF);
-    if ($inMin < $startMin) {
-      $total_menit += max(0, minutesDiff($tanggal, $jam_masuk, LEMBUR_START_CUTOFF));
-    }
-  }
-
-  if ($jam_keluar !== null) {
-    $outMin = toMinutes($jam_keluar);
-    $endMin = toMinutes(LEMBUR_END_CUTOFF);
-    if ($outMin >= $endMin) { // include tepat di cutoff
-      $total_menit += max(0, minutesDiff($tanggal, LEMBUR_END_CUTOFF, $jam_keluar));
-    }
-  }
-
-  // Jika tidak ada menit lembur -> hapus entri lembur agar bersih
-  if ($total_menit <= 0) {
-    $del = $conn->prepare("DELETE FROM lembur WHERE user_id=? AND tanggal=?");
-    $del->bind_param("is", $user_id, $tanggal);
-    $del->execute();
-    echo json_encode([
-      "success"     => true,
-      "deleted"     => ($del->affected_rows > 0),
-      "total_menit" => 0,
-      "total_jam"   => 0,
-      "total_upah"  => 0,
-    ]);
-    exit;
-  }
-
-  // Pembulatan jam: step 1 jam (tanpa desimal, sesuai instruksi kamu)
-  $total_jam  = intdiv($total_menit, 60);    // 0,1,2,…
-  $total_upah = (int)($total_jam * $rate);   // rate flat per jam
-
-  // === UPSERT lembur TANPA kolom upah_per_jam ===
-  $sql = "INSERT INTO lembur (
-            user_id, tanggal, jam_masuk, jam_keluar, alasan,
-            total_menit, total_jam, total_upah
-          ) VALUES (?,?,?,?,?,?,?,?)
-          ON DUPLICATE KEY UPDATE
-            jam_masuk   = VALUES(jam_masuk),
-            jam_keluar  = VALUES(jam_keluar),
-            alasan      = VALUES(alasan),
-            total_menit = VALUES(total_menit),
-            total_jam   = VALUES(total_jam),
-            total_upah  = VALUES(total_upah)";
+  // selalu gunakan kolom alasan_keluar (kolomnya memang ada)
+  $sql = "
+    INSERT INTO `lembur`
+      (user_id, tanggal, jam_masuk, jam_keluar, alasan, alasan_keluar,
+       total_menit_masuk, total_menit_keluar, total_menit, total_upah, total_jam)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    ON DUPLICATE KEY UPDATE
+      jam_masuk          = COALESCE(VALUES(jam_masuk),  jam_masuk),
+      jam_keluar         = COALESCE(VALUES(jam_keluar), jam_keluar),
+      alasan             = COALESCE(VALUES(alasan),     alasan),
+      alasan_keluar      = COALESCE(VALUES(alasan_keluar), alasan_keluar),
+      total_menit_masuk  = VALUES(total_menit_masuk),
+      total_menit_keluar = VALUES(total_menit_keluar),
+      total_menit        = VALUES(total_menit),
+      total_upah         = VALUES(total_upah),
+      total_jam          = VALUES(total_jam)
+  ";
   $st = $conn->prepare($sql);
-
-  // NOTE: NULL aman untuk kolom jam_masuk/jam_keluar/alasan bila tipe kolomnya NULLable
   $st->bind_param(
-    "issssiii",
-    $user_id,
-    $tanggal,
-    $jam_masuk,   // bisa null
-    $jam_keluar,  // bisa null
-    $alasan,      // bisa null
-    $total_menit,
-    $total_jam,
-    $total_upah
+    'isssssiiiid',
+    $user_id, $tanggal, $jam_masuk, $jam_keluar, $alasan, $alasan_keluar,
+    $menitMasuk, $menitKeluar, $total_menit, $total_upah_int, $total_jam_dec
   );
-
-  if (!$st->execute()) {
-    throw new Exception("DB error: " . $st->error);
-  }
+  $st->execute();
+  $st->close();
 
   echo json_encode([
-    "success"       => true,
-    "user_id"       => $user_id,
-    "tanggal"       => $tanggal,
-    "jam_masuk"     => $jam_masuk,
-    "jam_keluar"    => $jam_keluar,
-    "alasan"        => $alasan,
-    "total_menit"   => $total_menit,
-    "total_jam"     => $total_jam,
-    "total_upah"    => $total_upah,
-  ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    'success'=>true,
+    'payload'=>[
+      'user_id'=>$user_id,'tanggal'=>$tanggal,
+      'jam_masuk'=>$jam_masuk,'jam_keluar'=>$jam_keluar,
+      'alasan'=>$alasan,'alasan_keluar'=>$alasan_keluar,
+    ],
+    'hasil'=>[
+      'total_menit_masuk'=>$menitMasuk,'total_menit_keluar'=>$menitKeluar,
+      'total_menit'=>$total_menit,'total_jam'=>$total_jam_dec,'total_upah'=>$total_upah_int,
+    ],
+  ], JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
 
 } catch (Throwable $e) {
   http_response_code(400);
-  echo json_encode([
-    "success" => false,
-    "message" => $e->getMessage(),
-  ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+  echo json_encode(['success'=>false,'message'=>$e->getMessage()]);
 }

@@ -4,15 +4,7 @@ header("Access-Control-Allow-Origin: *");
 header("Content-Type: application/json; charset=utf-8");
 
 require_once __DIR__ . '/../Koneksi.php';
-
-/**
- * Konfigurasi server (single source of truth).
- * Ubah di sini untuk testing; Absen.tsx akan ikut otomatis.
- */
-const LEMBUR_START_CUTOFF = '08:00:00';
-const LEMBUR_END_CUTOFF   = '17:00:00';
-const RATE_PER_JAM        = 10000;
-const RATE_PER_MENIT      = RATE_PER_JAM / 60;
+require_once __DIR__ . '/config_lembur.php'; // ⬅️ tambahkan ini
 
 try {
   $user_id = isset($_GET['user_id']) ? (int)$_GET['user_id'] : 0;
@@ -41,8 +33,10 @@ try {
    */
   $jam_masuk_time  = "TIME(REPLACE(NULLIF(l.jam_masuk,''),  '.', ':'))";
   $jam_keluar_time = "TIME(REPLACE(NULLIF(l.jam_keluar,''), '.', ':'))";
-  $cut_in  = "TIME '".LEMBUR_START_CUTOFF."'";
-  $cut_out = "TIME '".LEMBUR_END_CUTOFF."'";
+
+  // Pakai cutoff dari SSoT
+  $cut_in  = "TIME '".LE_START_CUTOFF."'";
+  $cut_out = "TIME '".LE_END_CUTOFF."'";
 
   // menit lembur split (masuk & keluar)
   $expr_masuk = "
@@ -78,7 +72,7 @@ try {
       -- upah dihitung per MENIT, bukan dibulatkan per jam
       CASE
         WHEN COALESCE(l.total_upah,0) > 0 THEN l.total_upah
-        ELSE ROUND(($expr_total) * ".RATE_PER_MENIT.")
+        ELSE ROUND(($expr_total) * ".(LE_RATE_PER_MENIT).")
       END AS total_upah_final
 
     FROM lembur l
@@ -94,7 +88,7 @@ try {
 
   $rows = [];
   while ($r = $res->fetch_assoc()) {
-    // kalau kamu punya kolom terpisah di DB (total_menit_masuk/keluar), pakai jika > 0; else pakai kalkulasi
+    // kalau punya kolom split di DB, pakai jika > 0; else pakai kalkulasi
     $menit_masuk  = isset($r['total_menit_masuk']) && (int)$r['total_menit_masuk'] > 0
                   ? (int)$r['total_menit_masuk']
                   : (int)$r['menit_masuk_calc'];
@@ -122,7 +116,7 @@ try {
       "total_jam"          => $total_jam_str,
       "total_upah"         => (int)$r["total_upah_final"],
 
-      "rate_per_menit"     => RATE_PER_MENIT,
+      "rate_per_menit"     => LE_RATE_PER_MENIT,
     ];
   }
 
@@ -138,7 +132,7 @@ try {
   $sum_in  = (int)($sumRow["sum_in"]  ?? 0);
   $sum_out = (int)($sumRow["sum_out"] ?? 0);
   $sum_total = $sum_in + $sum_out;
-  $sum_upah  = (int) round($sum_total * RATE_PER_MENIT);
+  $sum_upah  = (int) round($sum_total * LE_RATE_PER_MENIT);
 
   echo json_encode([
     "success" => true,
@@ -151,10 +145,10 @@ try {
       "menit_keluar_7hari" => $sum_out,
       "total_menit_7hari"  => $sum_total,
       "total_upah_7hari"   => $sum_upah,
-      "rate_per_jam"       => RATE_PER_JAM,
-      "rate_per_menit"     => RATE_PER_MENIT,
-      "cutoff_start"       => LEMBUR_START_CUTOFF,
-      "cutoff_end"         => LEMBUR_END_CUTOFF,
+      "rate_per_jam"       => LE_RATE_PER_JAM,
+      "rate_per_menit"     => LE_RATE_PER_MENIT,
+      "cutoff_start"       => LE_START_CUTOFF,
+      "cutoff_end"         => LE_END_CUTOFF,
     ]
   ], JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
 

@@ -26,6 +26,7 @@ try {
   $user_id = (int)($_POST['user_id'] ?? 0);
   $lat     = isset($_POST['lat']) ? (float)$_POST['lat'] : null;
   $lng     = isset($_POST['lng']) ? (float)$_POST['lng'] : null;
+  // ALASAN MASUK (pakai kolom 'alasan' di tabel)
   $alasan  = isset($_POST['alasan']) ? trim((string)$_POST['alasan']) : '';
 
   if ($user_id <= 0 || $lat === null || $lng === null) {
@@ -34,6 +35,19 @@ try {
   }
 
   // --- upload foto (opsional) ---
+
+      $MAX_BYTES = 500 * 1024; // 500KB
+if (!empty($_FILES['foto']['tmp_name'])) {
+  if (($_FILES['foto']['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) {
+    http_response_code(400);
+    echo json_encode(['success'=>false,'message'=>'Upload error']); exit;
+  }
+  if (($_FILES['foto']['size'] ?? 0) > $MAX_BYTES) {
+    http_response_code(400);
+    echo json_encode(['success'=>false,'message'=>'File terlalu besar (maks 500KB).']); exit;
+  }
+}
+
   $fotoPath = null;
   if (!empty($_FILES['foto']['tmp_name']) && is_uploaded_file($_FILES['foto']['tmp_name'])) {
     $dir = __DIR__ . '/../uploads/absen';
@@ -48,25 +62,33 @@ try {
   }
 
   // 1) pastikan ada baris hari ini (kalau belum, buat; kalau sudah, IGNORE)
+  //    Tambahkan kolom 'alasan' pada INSERT awal.
   $ins = $conn->prepare("
-    INSERT IGNORE INTO absen (user_id, tanggal, jam_masuk, masuk_lat, masuk_lng, foto_masuk)
-    VALUES (?, CURDATE(), CURTIME(), ?, ?, ?)
+    INSERT IGNORE INTO absen (user_id, tanggal, jam_masuk, masuk_lat, masuk_lng, foto_masuk, alasan)
+    VALUES (?, CURDATE(), CURTIME(), ?, ?, ?, NULLIF(?, ''))
   ");
-  $ins->bind_param("idds", $user_id, $lat, $lng, $fotoPath);
+  // i d d s s
+  $ins->bind_param("iddss", $user_id, $lat, $lng, $fotoPath, $alasan);
   $ins->execute();
 
-  // 2) isi kolom yang masih NULL saja
-  $upd = $conn->prepare("
-    UPDATE absen
-       SET jam_masuk  = IFNULL(jam_masuk, CURTIME()),
-           masuk_lat  = IFNULL(masuk_lat,  ?),
-           masuk_lng  = IFNULL(masuk_lng,  ?),
-           foto_masuk = IFNULL(foto_masuk, ?)
-     WHERE user_id=? AND tanggal=CURDATE()
-     LIMIT 1
-  ");
-  $upd->bind_param("ddsi", $lat, $lng, $fotoPath, $user_id);
-  $upd->execute();
+  // 2) isi kolom yang masih NULL saja (termasuk 'alasan')
+    $upd = $conn->prepare("
+      UPDATE absen
+        SET jam_masuk  = IFNULL(jam_masuk, CURTIME()),
+            masuk_lat  = IFNULL(masuk_lat,  ?),
+            masuk_lng  = IFNULL(masuk_lng,  ?),
+            foto_masuk = IFNULL(foto_masuk, ?),
+            alasan     = CASE 
+                            WHEN COALESCE(status,'HADIR') IN ('IZIN','SAKIT')
+                              THEN IFNULL(alasan, NULLIF(?, ''))
+                            ELSE NULL
+                          END
+      WHERE user_id=? AND tanggal=CURDATE()
+      LIMIT 1
+    ");
+    $upd->bind_param("ddssi", $lat, $lng, $fotoPath, $alasan, $user_id);
+    $upd->execute();
+
 
   // kirim balik row hari ini
   $sel = $conn->prepare("SELECT * FROM absen WHERE user_id=? AND tanggal=CURDATE() LIMIT 1");
@@ -74,15 +96,17 @@ try {
   $sel->execute();
   $row = $sel->get_result()->fetch_assoc();
 
-  // panggil lembur/upsert
+  // panggil lembur/upsert (non-blocking)
   try {
     $payload = json_encode([
       'user_id' => $user_id,
       'tanggal' => date('Y-m-d'),
       'alasan'  => ($alasan !== '' ? $alasan : null),
+      'action'  => 'masuk',
     ]);
 
     if (function_exists('curl_init')) {
+      // NOTE: kalau butuh auto-host seperti checkout, bisa ganti base host dinamis
       $ch = curl_init("http://localhost/penggajian/api/lembur/upsert.php");
       curl_setopt_array($ch, [
         CURLOPT_POST => true,
@@ -106,7 +130,7 @@ try {
       @file_get_contents("http://localhost/penggajian/api/lembur/upsert.php", false, $ctx);
     }
   } catch (\Throwable $e) {
-    // sengaja diabaikan: jangan gagalkan check-in karena lembur gagal
+    // jangan gagalkan check-in karena lembur gagal
   }
 
   echo json_encode(['success'=>true,'message'=>'Check-in OK','data'=>$row]);

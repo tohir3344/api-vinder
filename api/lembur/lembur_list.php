@@ -9,16 +9,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(204); exit; }
 
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
-/** ===== Aturan (sesuai permintaan) =====
+require_once __DIR__ . '/config_lembur.php'; // ⬅️ tambahkan ini
+
+/** ===== Aturan (deskripsi) =====
  * Lembur dihitung:
- * - SEBELUM 08:00  => total_menit_masuk
- * - SETELAH 17:00  => total_menit_keluar
+ * - SEBELUM LE_START_CUTOFF  => total_menit_masuk
+ * - SETELAH  LE_END_CUTOFF   => total_menit_keluar
  * total_menit = masuk + keluar
  * Tidak ada upah.
  */
-const DB_NAME      = 'penggajian_db';
-const START_CUTOFF = '08:00';
-const END_CUTOFF   = '17:00';
+const DB_NAME = 'penggajian_db';
 
 /** ===== Utils waktu ===== */
 function parseHm(string $hhmm): ?array {
@@ -39,8 +39,8 @@ function minutesToHMM(int $minutes): string {
 }
 
 /** Hitung split lembur: [menitMasuk, menitKeluar]
- * - menitMasuk  = waktu sebelum 08:00
- * - menitKeluar = waktu setelah 17:00
+ * - menitMasuk  = waktu sebelum LE_START_CUTOFF
+ * - menitKeluar = waktu setelah LE_END_CUTOFF
  * Support cross-midnight (keluar < masuk → +24h).
  */
 function computeOvertimeSplit(string $jamMasuk, string $jamKeluar): array {
@@ -49,22 +49,26 @@ function computeOvertimeSplit(string $jamMasuk, string $jamKeluar): array {
   if ($in === null || $out === null) return [0, 0];
   if ($out < $in) $out += 24 * 60; // shift lewat tengah malam
 
-  $startCut = toMinutes(START_CUTOFF); // 480
-  $endCut   = toMinutes(END_CUTOFF);   // 1020
+  $startCut = toMinutes(LE_START_CUTOFF); // dari SSoT
+  $endCut   = toMinutes(LE_END_CUTOFF);   // dari SSoT
 
-  // Lembur sebelum 08:00: dari jamMasuk sampai min(08:00, jamKeluar)
+  // Lembur sebelum startCut: dari jamMasuk sampai min(startCut, jamKeluar)
   $masuk = 0;
   if ($in < $startCut) {
     $masuk = max(0, min($startCut, $out) - $in);
   }
 
-  // Lembur setelah 17:00: dari max(17:00, jamMasuk) sampai jamKeluar
+  // Lembur setelah endCut: dari max(endCut, jamMasuk) sampai jamKeluar
   $keluar = 0;
   if ($out > $endCut) {
     $keluar = max(0, $out - max($endCut, $in));
   }
 
   return [$masuk, $keluar];
+}
+
+function hoursDecimal(int $minutes): float {
+  return round($minutes / 60.0, 2);
 }
 
 /** ===== Helper: cek kolom exist (sekali per request) ===== */
@@ -89,6 +93,20 @@ try {
 
   $method = $_SERVER['REQUEST_METHOD'];
   $action = $_GET['action'] ?? ($_POST['action'] ?? '');
+
+  /* ===================== GET: config ===================== *
+   * Frontend bisa ambil cutoff/rate langsung dari sini.
+   */
+    if ($method === 'GET' && $action === 'config') {
+      echo json_encode([
+        'success'        => true,
+        'start_cutoff'   => LE_START_CUTOFF,
+        'end_cutoff'     => LE_END_CUTOFF,
+        'rate_per_jam'   => defined('LE_RATE_PER_JAM')   ? LE_RATE_PER_JAM   : null,
+        'rate_per_menit' => defined('LE_RATE_PER_MENIT') ? LE_RATE_PER_MENIT : null,
+      ], JSON_UNESCAPED_UNICODE);
+      exit;
+    }
 
   /* ===================== GET: list ===================== *
    * Query opsional: start, end, user_id, q (nama)
@@ -243,19 +261,7 @@ try {
   }
 
   /* ===================== POST: create / edit ===================== *
-   * Body JSON:
-   * {
-   *   "action": "create" | "edit",
-   *   "data": {
-   *     "id"?        : number (wajib untuk edit)
-   *     "user_id"?   : number  | atau "nama": string
-   *     "tanggal"    : "YYYY-MM-DD",
-   *     "jam_masuk"  : "HH:MM"|"HH:MM:SS",
-   *     "jam_keluar" : "HH:MM"|"HH:MM:SS",
-   *     "alasan"     : string
-   *   }
-   * }
-   * Catatan: server SELALU hitung ulang split (masuk/keluar) kalau jam valid.
+   * (tidak berubah selain perhitungan split pakai SSoT)
    */
   if ($method === 'POST') {
     $input = json_decode(file_get_contents('php://input'), true);
@@ -284,8 +290,9 @@ try {
 
     $hasInOut = (parseHm($jam_masuk) !== null && parseHm($jam_keluar) !== null);
     [$mMasuk, $mKeluar] = $hasInOut ? computeOvertimeSplit($jam_masuk, $jam_keluar) : [0, 0];
-    $total_menit = $mMasuk + $mKeluar;
-    $total_jam   = minutesToHMM($total_menit);
+    $total_menit   = $mMasuk + $mKeluar;
+    $total_jam_dec = hoursDecimal($total_menit); // ✅ desimal, cocok DECIMAL(6,2)
+    $total_jam_str = minutesToHMM($total_menit); // (opsional) buat respons ke FE
 
     if (($input['action'] ?? '') === 'create') {
       if ($HAS_JAM && $HAS_MENIT_MASUK && $HAS_MENIT_KELUAR) {
@@ -295,9 +302,9 @@ try {
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ");
         $stmt->bind_param(
-          'issssisii', // i s s s s i s i i
+          'issssidii', 
           $user_id, $tanggal, $jam_masuk, $jam_keluar, $alasan,
-          $total_menit, $total_jam, $mMasuk, $mKeluar
+          $total_menit, $total_jam_dec, $mMasuk, $mKeluar
         );
       } else {
         $stmt = $db->prepare("
@@ -309,14 +316,15 @@ try {
         );
       }
       $stmt->execute();
-      echo json_encode([
-        'success'             => true,
-        'id'                  => $stmt->insert_id,
-        'total_menit_masuk'   => $mMasuk,
-        'total_menit_keluar'  => $mKeluar,
-        'total_menit'         => $total_menit,
-        'total_jam'           => $total_jam
-      ], JSON_UNESCAPED_UNICODE);
+     echo json_encode([
+      'success'             => true,
+      'id'                  => $stmt->insert_id,
+      'total_menit_masuk'   => $mMasuk,
+      'total_menit_keluar'  => $mKeluar,
+      'total_menit'         => $total_menit,
+      'total_jam'           => $total_jam_str,   // untuk tampilan H:MM
+      'total_jam_dec'       => $total_jam_dec,   // kalau FE mau angka
+    ], JSON_UNESCAPED_UNICODE);
       exit;
     }
 
