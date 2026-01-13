@@ -1,0 +1,101 @@
+[13-Nov-2025 12:14:15 Asia/Jakarta] PHP Fatal error:  Uncaught TypeError: ini_set() expects parameter 2 to be string, int given in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php:4
+Stack trace:
+#0 /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php(4): ini_set('display_errors', 0)
+#1 {main}
+  thrown in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php on line 4
+[13-Nov-2025 12:14:16 Asia/Jakarta] PHP Fatal error:  Uncaught TypeError: ini_set() expects parameter 2 to be string, int given in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php:4
+Stack trace:
+#0 /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php(4): ini_set('display_errors', 0)
+#1 {main}
+  thrown in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php on line 4
+[13-Nov-2025 12:14:16 Asia/Jakarta] PHP Fatal error:  Uncaught TypeError: ini_set() expects parameter 2 to be string, int given in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php:4
+Stack trace:
+#0 /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php(4): ini_set('display_errors', 0)
+#1 {main}
+  thrown in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php on line 4
+[13-Nov-2025 12:14:17 Asia/Jakarta] PHP Fatal error:  Uncaught TypeError: ini_set() expects parameter 2 to be string, int given in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php:4
+Stack trace:
+#0 /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php(4): ini_set('display_errors', 0)
+#1 {main}
+  thrown in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php on line 4
+[13-Nov-2025 12:14:18 Asia/Jakarta] PHP Fatal error:  Uncaught TypeError: ini_set() expects parameter 2 to be string, int given in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php:4
+Stack trace:
+#0 /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php(4): ini_set('display_errors', 0)
+#1 {main}
+  thrown in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php on line 4
+[13-Nov-2025 12:14:18 Asia/Jakarta] PHP Fatal error:  Uncaught TypeError: ini_set() expects parameter 2 to be string, int given in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php:4
+Stack trace:
+#0 /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php(4): ini_set('display_errors', 0)
+#1 {main}
+  thrown in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php on line 4
+[13-Nov-2025 12:14:19 Asia/Jakarta] PHP Fatal error:  Uncaught TypeError: ini_set() expects parameter 2 to be string, int given in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php:4
+Stack trace:
+#0 /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php(4): ini_set('display_errors', 0)
+#1 {main}
+  thrown in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php on line 4
+[13-Nov-2025 12:14:31 Asia/Jakarta] PHP Fatal error:  Uncaught TypeError: ini_set() expects parameter 2 to be string, int given in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php:4
+Stack trace:
+#0 /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php(4): ini_set('display_errors', 0)
+#1 {main}
+  thrown in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php on line 4
+[13-Nov-2025 12:24:51 Asia/Jakarta] PHP Fatal error:  Uncaught TypeError: ini_set() expects parameter 2 to be string, int given in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php:4
+Stack trace:
+#0 /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php(4): ini_set('display_errors', 0)
+#1 {main}
+  thrown in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php on line 4
+[13-Nov-2025 12:24:55 Asia/Jakarta] PHP Fatal error:  Uncaught TypeError: ini_set() expects parameter 2 to be string, int given in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php:4
+Stack trace:
+#0 /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php(4): ini_set('display_errors', 0)
+#1 {main}
+  thrown in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php on line 4
+[13-Nov-2025 15:03:32 Asia/Jakarta] PHP Fatal error:  Uncaught TypeError: ini_set() expects parameter 2 to be string, int given in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php:4
+Stack trace:
+#0 /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php(4): ini_set('display_errors', 0)
+#1 {main}
+  thrown in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php on line 4
+[13-Nov-2025 15:03:47 Asia/Jakarta] PHP Fatal error:  Uncaught TypeError: ini_set() expects parameter 2 to be string, int given in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php:4
+Stack trace:
+#0 /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php(4): ini_set('display_errors', 0)
+#1 {main}
+  thrown in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php on line 4
+[13-Nov-2025 15:04:31 Asia/Jakarta] PHP Fatal error:  Uncaught TypeError: ini_set() expects parameter 2 to be string, int given in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php:4
+Stack trace:
+#0 /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php(4): ini_set('display_errors', 0)
+#1 {main}
+  thrown in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php on line 4
+[13-Nov-2025 15:05:26 Asia/Jakarta] PHP Fatal error:  Uncaught TypeError: ini_set() expects parameter 2 to be string, int given in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php:4
+Stack trace:
+#0 /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php(4): ini_set('display_errors', 0)
+#1 {main}
+  thrown in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php on line 4
+[13-Nov-2025 15:05:33 Asia/Jakarta] PHP Fatal error:  Uncaught TypeError: ini_set() expects parameter 2 to be string, int given in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php:4
+Stack trace:
+#0 /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php(4): ini_set('display_errors', 0)
+#1 {main}
+  thrown in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php on line 4
+[13-Nov-2025 15:09:17 Asia/Jakarta] PHP Fatal error:  Uncaught TypeError: ini_set() expects parameter 2 to be string, int given in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php:4
+Stack trace:
+#0 /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php(4): ini_set('display_errors', 0)
+#1 {main}
+  thrown in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php on line 4
+[13-Nov-2025 15:09:17 Asia/Jakarta] PHP Fatal error:  Uncaught TypeError: ini_set() expects parameter 2 to be string, int given in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php:4
+Stack trace:
+#0 /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php(4): ini_set('display_errors', 0)
+#1 {main}
+  thrown in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php on line 4
+[13-Nov-2025 15:10:43 Asia/Jakarta] PHP Fatal error:  Uncaught TypeError: ini_set() expects parameter 2 to be string, int given in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php:4
+Stack trace:
+#0 /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php(4): ini_set('display_errors', 0)
+#1 {main}
+  thrown in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php on line 4
+[13-Nov-2025 15:12:24 Asia/Jakarta] PHP Fatal error:  Uncaught TypeError: ini_set() expects parameter 2 to be string, int given in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php:4
+Stack trace:
+#0 /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php(4): ini_set('display_errors', 0)
+#1 {main}
+  thrown in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php on line 4
+[13-Nov-2025 15:16:05 Asia/Jakarta] PHP Fatal error:  Uncaught TypeError: ini_set() expects parameter 2 to be string, int given in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php:4
+Stack trace:
+#0 /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php(4): ini_set('display_errors', 0)
+#1 {main}
+  thrown in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php on line 4
+[13-Nov-2025 15:17:55 Asia/Jakarta] PHP Notice:  Undefined variable: DB_NAME in /home/pork3646/public_html/penggajian/api/galeri/galeri_admin.php on line 78

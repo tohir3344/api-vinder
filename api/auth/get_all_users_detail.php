@@ -19,13 +19,18 @@ function bad($msg, $http = 500) {
 }
 
 try {
-  // Gunakan $conn (sesuai Koneksi.php kamu)
   if (!isset($conn) || !$conn instanceof mysqli) {
     bad("Koneksi database tidak tersedia.", 500);
   }
 
-  // Ambil data minimal untuk list
-  $sql = "SELECT id, username, COALESCE(nama_lengkap,'') AS nama_lengkap FROM users ORDER BY id ASC";
+  // TAMBAHAN: Tambahkan lembur ke dalam SELECT dan COALESCE
+  $sql = "SELECT id, username, 
+                 COALESCE(nama_lengkap,'') AS nama_lengkap, 
+                 COALESCE(gaji, 0) AS gaji,
+                 COALESCE(lembur, 0) AS lembur
+          FROM users
+          ORDER BY id ASC";
+          
   $res = $conn->query($sql);
   if ($res === false) {
     bad("Query gagal: " . $conn->error, 500);
@@ -33,11 +38,13 @@ try {
 
   $users = [];
   while ($row = $res->fetch_assoc()) {
-    // Optional: pastikan tipe data konsisten
     $users[] = [
-      "id"            => (int)$row["id"],
-      "username"      => (string)$row["username"],
-      "nama_lengkap"  => $row["nama_lengkap"] !== "" ? (string)$row["nama_lengkap"] : null,
+      "id"           => (int)$row["id"],
+      "username"     => (string)$row["username"],
+      "nama_lengkap" => $row["nama_lengkap"] !== "" ? (string)$row["nama_lengkap"] : null,
+      "gaji"         => is_null($row["gaji"]) ? null : (int)$row["gaji"],
+      // TAMBAHAN: Kirim data lembur ke aplikasi
+      "lembur"       => is_null($row["lembur"]) ? null : (int)$row["lembur"],
     ];
   }
 

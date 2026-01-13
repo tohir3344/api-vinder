@@ -12,7 +12,7 @@ if (!$id) {
 }
 
 // Hapus user
-$stmt = $koneksi->prepare("DELETE FROM users WHERE id=?");
+$stmt = $conn->prepare("DELETE FROM users WHERE id=?");
 $stmt->bind_param("i", $id);
 
 if ($stmt->execute()) {
@@ -22,5 +22,5 @@ if ($stmt->execute()) {
 }
 
 $stmt->close();
-$koneksi->close();
+$conn->close();
 ?>

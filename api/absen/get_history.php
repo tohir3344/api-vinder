@@ -1,6 +1,9 @@
 <?php
 declare(strict_types=1);
-
+error_reporting(E_ALL);
+ini_set('display_errors', '1');
+ini_set('log_errors', '1');
+ini_set('error_log', __DIR__ . '/../php_error.log');
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
@@ -18,6 +21,7 @@ try {
         echo json_encode(["success"=>false,"message"=>"Koneksi.php not found (check filename case)."]);
         exit;
     }
+    /** @var mysqli $conn */
     require_once $connPath;
 
     // === Helper: cek kolom ada/tidak ===
@@ -106,10 +110,10 @@ try {
 
     $whereSql = $where ? ('WHERE '.implode(' AND ', $where)) : '';
 
-    // siapkan ekspresi SELECT untuk nama & email agar selalu ada
     $selectNama  = $nameCol ? "u.`$nameCol` AS nama" : "CAST('' AS CHAR) AS nama";
     $selectEmail = $hasEmail ? "u.`email` AS email" : "CAST('' AS CHAR) AS email";
 
+    // 🔥🔥 BAGIAN INI YANG BERUBAH TOTAL BRAY 🔥🔥
     $sql = "
       SELECT
         a.id,
@@ -120,12 +124,25 @@ try {
         a.jam_masuk,
         a.jam_keluar,
         a.status        AS keterangan,
-        a.alasan,
+        
+        -- LOGIC PINTAR: Pilih alasan dari tabel yang tepat
+        CASE 
+            WHEN a.status = 'HADIR' THEN COALESCE(l.alasan, a.alasan)
+            ELSE a.alasan 
+        END AS alasan,
+
+        -- Ambil alasan_keluar dari tabel lembur
+        l.alasan_keluar,
+        
         a.masuk_lat, a.masuk_lng,
         a.keluar_lat, a.keluar_lng,
         a.foto_masuk, a.foto_keluar
       FROM absen a
       JOIN `{$userTable}` u ON u.id = a.user_id
+      
+      -- LEFT JOIN ke tabel lembur biar bisa ambil datanya
+      LEFT JOIN lembur l ON l.user_id = a.user_id AND l.tanggal = a.tanggal
+      
       $whereSql
       ORDER BY a.tanggal DESC, a.jam_masuk DESC, a.id DESC
       LIMIT $limit

@@ -1,16 +1,83 @@
 <?php
+// api/lembur/get_list.php
 declare(strict_types=1);
+
+// Matikan error display agar output JSON bersih
+ini_set('display_errors', '0');
+error_reporting(0);
+
 header("Access-Control-Allow-Origin: *");
 header("Content-Type: application/json; charset=utf-8");
 
 require_once __DIR__ . '/../Koneksi.php';
-require_once __DIR__ . '/config_lembur.php'; // ⬅️ tambahkan ini
+
+// Fungsi bantu hitung upah per baris (Rumus Baru)
+function hitungUpahBaris($tanggal, $jam_masuk, $jam_keluar, $rate_lembur) {
+    if (empty($jam_masuk) || empty($jam_keluar)) return 0;
+
+    try {
+        $startL = new DateTime($tanggal . ' ' . $jam_masuk);
+        $endL   = new DateTime($tanggal . ' ' . $jam_keluar);
+        
+        // Handle lewat tengah malam
+        if ($endL < $startL) $endL->modify('+1 day');
+
+        // Batas Waktu
+        $batasBawah  = new DateTime($tanggal . ' 17:00:00'); 
+        $batasDouble = new DateTime($tanggal . ' 20:00:00');
+
+        // Normalisasi Start (Mulai hitung 17:00)
+        if ($startL < $batasBawah) $startL = clone $batasBawah; 
+
+        // Jika pulang sebelum start (sebelum 17:00), 0 rupiah
+        if ($endL <= $startL) return 0;
+
+        // Hitung Menit
+        $menit = ($endL->getTimestamp() - $startL->getTimestamp()) / 60;
+        if ($menit <= 0) return 0;
+
+        $upah = 0;
+
+        // RUMUS SPLIT (17-20 Normal, >20 Double)
+        if ($endL <= $batasDouble) {
+            $jam = $menit / 60;
+            $upah += ($jam * $rate_lembur);
+        }
+        elseif ($startL >= $batasDouble) {
+            $jam = $menit / 60;
+            $upah += ($jam * $rate_lembur * 2);
+        }
+        else {
+            $secsNormal = $batasDouble->getTimestamp() - $startL->getTimestamp();
+            $jamNormal  = max(0, ($secsNormal / 60) / 60);
+            
+            $secsDouble = $endL->getTimestamp() - $batasDouble->getTimestamp();
+            $jamDouble  = max(0, ($secsDouble / 60) / 60);
+
+            $upah += ($jamNormal * $rate_lembur);
+            $upah += ($jamDouble * $rate_lembur * 2);
+        }
+
+        return (int)ceil($upah); 
+
+    } catch (Exception $e) {
+        return 0;
+    }
+}
 
 try {
   $user_id = isset($_GET['user_id']) ? (int)$_GET['user_id'] : 0;
   if ($user_id <= 0) throw new Exception("user_id wajib");
 
-  $start = $_GET['start'] ?? null;  // YYYY-MM-DD
+  // 1. AMBIL TARIF USER TERBARU
+  $qUser = $conn->prepare("SELECT lembur FROM users WHERE id=? LIMIT 1");
+  $qUser->bind_param('i', $user_id);
+  $qUser->execute();
+  $u = $qUser->get_result()->fetch_assoc();
+  $rate_lembur_user = (int)($u['lembur'] ?? 0); 
+
+  // Filter Tanggal
+  $start = $_GET['start'] ?? null; 
   $end   = $_GET['end']   ?? null;
   $limit = isset($_GET['limit']) ? max(1, min(500, (int)$_GET['limit'])) : 200;
 
@@ -25,56 +92,11 @@ try {
 
   $whereSql = "WHERE ".implode(" AND ", $where);
 
-  /**
-   * NORMALISASI JAM:
-   * - kosong ('') -> NULL
-   * - titik diganti titik dua (08.15 -> 08:15)
-   * - cast ke TIME()
-   */
-  $jam_masuk_time  = "TIME(REPLACE(NULLIF(l.jam_masuk,''),  '.', ':'))";
-  $jam_keluar_time = "TIME(REPLACE(NULLIF(l.jam_keluar,''), '.', ':'))";
-
-  // Pakai cutoff dari SSoT
-  $cut_in  = "TIME '".LE_START_CUTOFF."'";
-  $cut_out = "TIME '".LE_END_CUTOFF."'";
-
-  // menit lembur split (masuk & keluar)
-  $expr_masuk = "
-    CASE
-      WHEN $jam_masuk_time IS NOT NULL AND $jam_masuk_time < $cut_in
-        THEN GREATEST(0, TIMESTAMPDIFF(MINUTE, $jam_masuk_time, $cut_in))
-      ELSE 0
-    END
-  ";
-  $expr_keluar = "
-    CASE
-      WHEN $jam_keluar_time IS NOT NULL AND $jam_keluar_time > $cut_out
-        THEN GREATEST(0, TIMESTAMPDIFF(MINUTE, $cut_out, $jam_keluar_time))
-      ELSE 0
-    END
-  ";
-  $expr_total = "($expr_masuk + $expr_keluar)";
-
+  // Query Utama
   $sql = "
     SELECT
-      l.id, l.user_id, l.tanggal, l.jam_masuk, l.jam_keluar, l.alasan,
-
-      -- split menit (fallback kalkulasi on-the-fly)
-      $expr_masuk  AS menit_masuk_calc,
-      $expr_keluar AS menit_keluar_calc,
-
-      -- total menit (pakai tersimpan kalau ada; else kalkulasi)
-      CASE
-        WHEN COALESCE(l.total_menit,0) > 0 THEN l.total_menit
-        ELSE $expr_total
-      END AS total_menit_final,
-
-      -- upah dihitung per MENIT, bukan dibulatkan per jam
-      CASE
-        WHEN COALESCE(l.total_upah,0) > 0 THEN l.total_upah
-        ELSE ROUND(($expr_total) * ".(LE_RATE_PER_MENIT).")
-      END AS total_upah_final
-
+      l.id, l.user_id, l.tanggal, l.jam_masuk, l.jam_keluar, l.alasan, l.alasan_keluar,
+      l.total_menit, l.total_upah
     FROM lembur l
     $whereSql
     ORDER BY l.tanggal DESC, l.id DESC
@@ -88,67 +110,67 @@ try {
 
   $rows = [];
   while ($r = $res->fetch_assoc()) {
-    // kalau punya kolom split di DB, pakai jika > 0; else pakai kalkulasi
-    $menit_masuk  = isset($r['total_menit_masuk']) && (int)$r['total_menit_masuk'] > 0
-                  ? (int)$r['total_menit_masuk']
-                  : (int)$r['menit_masuk_calc'];
+    
+    // --- LIVE CALCULATION ---
+    $upah_realtime = hitungUpahBaris($r['tanggal'], $r['jam_masuk'], $r['jam_keluar'], $rate_lembur_user);
+    
+    // --- CEK APAKAH JENISNYA OVER (Pulang > 20:00) ---
+    $isOver = false;
+    if (!empty($r['jam_keluar'])) {
+        $jamKeluarObj = new DateTime($r['tanggal'] . ' ' . $r['jam_keluar']);
+        $batasOver    = new DateTime($r['tanggal'] . ' 20:00:00');
+        if ($jamKeluarObj > $batasOver) {
+            $isOver = true;
+        }
+    }
 
-    $menit_keluar = isset($r['total_menit_keluar']) && (int)$r['total_menit_keluar'] > 0
-                  ? (int)$r['total_menit_keluar']
-                  : (int)$r['menit_keluar_calc'];
-
-    $total_menit  = (int)$r['total_menit_final'];
+    $total_menit = (int)$r['total_menit'];
     $h = intdiv($total_menit, 60);
     $m = $total_menit % 60;
     $total_jam_str = $h . ":" . str_pad((string)$m, 2, "0", STR_PAD_LEFT);
 
     $rows[] = [
-      "id"                 => (int)$r["id"],
-      "user_id"            => (int)$r["user_id"],
-      "tanggal"            => $r["tanggal"],
-      "jam_masuk"          => $r["jam_masuk"],
-      "jam_keluar"         => $r["jam_keluar"],
-      "alasan"             => $r["alasan"],
-
-      "total_menit_masuk"  => $menit_masuk,
-      "total_menit_keluar" => $menit_keluar,
-      "total_menit"        => $total_menit,
-      "total_jam"          => $total_jam_str,
-      "total_upah"         => (int)$r["total_upah_final"],
-
-      "rate_per_menit"     => LE_RATE_PER_MENIT,
+      "id"             => (int)$r["id"],
+      "user_id"        => (int)$r["user_id"],
+      "tanggal"        => $r["tanggal"],
+      "jam_masuk"      => $r["jam_masuk"],
+      "jam_keluar"     => $r["jam_keluar"],
+      "alasan_masuk"   => $r["alasan"], // Disesuaikan dengan frontend
+      "alasan_keluar"  => $r["alasan_keluar"],
+      
+      "total_menit"    => $total_menit,
+      "total_jam"      => $total_jam_str,
+      
+      "total_upah"     => $upah_realtime, 
+      "jenis_lembur"   => $isOver ? "over" : "biasa", // Field baru untuk Frontend
+      "rate_used"      => $rate_lembur_user
     ];
   }
 
-  // Summary 7 hari (opsional, buat UI ringkas)
+  // --- HITUNG SUMMARY 7 HARI TERAKHIR ---
   $stmt2 = $conn->prepare("
-    SELECT SUM($expr_masuk) AS sum_in, SUM($expr_keluar) AS sum_out
-    FROM lembur l
-    WHERE l.user_id = ? AND l.tanggal >= CURRENT_DATE - INTERVAL 6 DAY
+    SELECT tanggal, jam_masuk, jam_keluar 
+    FROM lembur 
+    WHERE user_id = ? AND tanggal >= CURRENT_DATE - INTERVAL 6 DAY
   ");
   $stmt2->bind_param("i", $user_id);
   $stmt2->execute();
-  $sumRow = $stmt2->get_result()->fetch_assoc();
-  $sum_in  = (int)($sumRow["sum_in"]  ?? 0);
-  $sum_out = (int)($sumRow["sum_out"] ?? 0);
-  $sum_total = $sum_in + $sum_out;
-  $sum_upah  = (int) round($sum_total * LE_RATE_PER_MENIT);
+  $resSummary = $stmt2->get_result();
+
+  $sum_upah = 0;
+  while($s = $resSummary->fetch_assoc()) {
+      $sum_upah += hitungUpahBaris($s['tanggal'], $s['jam_masuk'], $s['jam_keluar'], $rate_lembur_user);
+  }
 
   echo json_encode([
     "success" => true,
     "count"   => count($rows),
-    "rows"    => $rows,
-    "data"    => $rows, // alias untuk kompatibilitas
+    "data"    => $rows, // React Native biasanya baca field 'data'
+    "rows"    => $rows, 
 
     "summary" => [
-      "menit_masuk_7hari"  => $sum_in,
-      "menit_keluar_7hari" => $sum_out,
-      "total_menit_7hari"  => $sum_total,
-      "total_upah_7hari"   => $sum_upah,
-      "rate_per_jam"       => LE_RATE_PER_JAM,
-      "rate_per_menit"     => LE_RATE_PER_MENIT,
-      "cutoff_start"       => LE_START_CUTOFF,
-      "cutoff_end"         => LE_END_CUTOFF,
+      "total_upah_7hari" => $sum_upah,
+      "info"             => "Realtime Calculation (17-20 x1, >20 x2)"
     ]
   ], JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
 
@@ -156,3 +178,4 @@ try {
   http_response_code(400);
   echo json_encode(["success"=>false, "message"=>$e->getMessage()]);
 }
+?>

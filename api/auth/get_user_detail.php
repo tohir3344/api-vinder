@@ -28,7 +28,8 @@ try {
     bad("ID tidak valid", 400);
   }
 
-  $sql = "SELECT id, username, password, nama_lengkap, tempat_lahir, tanggal_lahir, no_telepon, alamat
+  // 🔥 UPDATE: Tambahkan kolom 'lembur' di SELECT 🔥
+  $sql = "SELECT id, username, password, nama_lengkap, tempat_lahir, tanggal_lahir, no_telepon, alamat, gaji, lembur
           FROM users WHERE id = ? LIMIT 1";
   $stmt = $conn->prepare($sql);
   if (!$stmt) {
@@ -42,6 +43,18 @@ try {
 
   $res = $stmt->get_result();
   if ($res && $row = $res->fetch_assoc()) {
+    // Normalisasi tipe gaji agar numerik
+    if (array_key_exists('gaji', $row) && $row['gaji'] !== null) {
+      $row['gaji'] = (int)$row['gaji'];
+    }
+    
+    // 🔥 TAMBAHAN: Normalisasi tipe lembur agar numerik 🔥
+    if (array_key_exists('lembur', $row) && $row['lembur'] !== null) {
+      $row['lembur'] = (int)$row['lembur'];
+    } else {
+      $row['lembur'] = 0; // Fallback jika data NULL di DB
+    }
+    
     ok($row);
   } else {
     bad("User tidak ditemukan", 404);

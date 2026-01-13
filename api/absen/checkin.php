@@ -1,140 +1,176 @@
 <?php
-declare(strict_types=1);
+// api/absen/checkin.php
+
+// 1. SET TIMEZONE
+date_default_timezone_set('Asia/Jakarta');
 
 header('Content-Type: application/json; charset=utf-8');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: POST, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, Authorization');
+
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(204); exit; }
 
 require_once __DIR__ . '/../Koneksi.php';
 
-// ===== Jam kerja (samakan dengan client & upsert) =====
-const START_TIME = '07:40:00';
-const END_TIME   = '17:20:00';
-function isOutsideWorkingNow(): bool {
-  $now = date('H:i:s');
-  return ($now < START_TIME) || ($now >= END_TIME);
-}
+// =========================================================
+// ⚙️ KONFIGURASI JAM
+// =========================================================
+const BATAS_LEMBUR_PAGI = '07:30:00'; 
+const JAM_TARGET_MASUK  = '08:00:00'; 
+const START_TIME_REWARD = '07:40:00'; 
 
 try {
-  if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    http_response_code(405);
-    echo json_encode(['success'=>false,'message'=>'Method not allowed']); exit;
-  }
-
-  $user_id = (int)($_POST['user_id'] ?? 0);
-  $lat     = isset($_POST['lat']) ? (float)$_POST['lat'] : null;
-  $lng     = isset($_POST['lng']) ? (float)$_POST['lng'] : null;
-  // ALASAN MASUK (pakai kolom 'alasan' di tabel)
-  $alasan  = isset($_POST['alasan']) ? trim((string)$_POST['alasan']) : '';
-
-  if ($user_id <= 0 || $lat === null || $lng === null) {
-    http_response_code(400);
-    echo json_encode(['success'=>false,'message'=>'user_id, lat, lng wajib']); exit;
-  }
-
-  // --- upload foto (opsional) ---
-
-      $MAX_BYTES = 500 * 1024; // 500KB
-if (!empty($_FILES['foto']['tmp_name'])) {
-  if (($_FILES['foto']['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) {
-    http_response_code(400);
-    echo json_encode(['success'=>false,'message'=>'Upload error']); exit;
-  }
-  if (($_FILES['foto']['size'] ?? 0) > $MAX_BYTES) {
-    http_response_code(400);
-    echo json_encode(['success'=>false,'message'=>'File terlalu besar (maks 500KB).']); exit;
-  }
-}
-
-  $fotoPath = null;
-  if (!empty($_FILES['foto']['tmp_name']) && is_uploaded_file($_FILES['foto']['tmp_name'])) {
-    $dir = __DIR__ . '/../uploads/absen';
-    if (!is_dir($dir)) @mkdir($dir, 0777, true);
-    $fname = 'masuk_' . $user_id . '_' . date('Ymd_His') . '.jpg';
-    $dest  = $dir . '/' . $fname;
-    if (!move_uploaded_file($_FILES['foto']['tmp_name'], $dest)) {
-      http_response_code(500);
-      echo json_encode(['success'=>false,'message'=>'Upload foto gagal']); exit;
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        throw new Exception('Method not allowed');
     }
-    $fotoPath = 'uploads/absen/' . $fname;
-  }
 
-  // 1) pastikan ada baris hari ini (kalau belum, buat; kalau sudah, IGNORE)
-  //    Tambahkan kolom 'alasan' pada INSERT awal.
-  $ins = $conn->prepare("
-    INSERT IGNORE INTO absen (user_id, tanggal, jam_masuk, masuk_lat, masuk_lng, foto_masuk, alasan)
-    VALUES (?, CURDATE(), CURTIME(), ?, ?, ?, NULLIF(?, ''))
-  ");
-  // i d d s s
-  $ins->bind_param("iddss", $user_id, $lat, $lng, $fotoPath, $alasan);
-  $ins->execute();
+    $user_id = (int)($_POST['user_id'] ?? 0);
+    $lat     = isset($_POST['lat']) ? (float)$_POST['lat'] : null;
+    $lng     = isset($_POST['lng']) ? (float)$_POST['lng'] : null;
+    $alasan  = isset($_POST['alasan']) ? trim((string)$_POST['alasan']) : '';
+    $tipe_absen = isset($_POST['tipe_absen']) ? strtoupper(trim($_POST['tipe_absen'])) : 'BIASA';
 
-  // 2) isi kolom yang masih NULL saja (termasuk 'alasan')
+    if ($user_id <= 0) throw new Exception('User ID tidak valid');
+
+    // Handle Foto
+    $fotoPath = null;
+    if (!empty($_FILES['foto']['tmp_name'])) {
+        $dir = __DIR__ . '/../../uploads/absen';
+        if (!is_dir($dir)) @mkdir($dir, 0777, true);
+        $prefix = ($tipe_absen === 'LEMBUR') ? 'lembur_' : 'masuk_';
+        $fname = $prefix . $user_id . '_' . date('Ymd_His') . '.jpg';
+        if (move_uploaded_file($_FILES['foto']['tmp_name'], $dir . '/' . $fname)) {
+            $fotoPath = 'uploads/absen/' . $fname;
+        }
+    }
+
+    // ============================================================
+    // A. INPUT LEMBUR MANUAL
+    // ============================================================
+    if ($tipe_absen === 'LEMBUR') {
+        $q = $conn->prepare("INSERT INTO lembur (user_id, tanggal, jam_masuk, alasan, foto_bukti, jenis_lembur, status, total_menit, total_upah) VALUES (?, CURDATE(), NOW(), ?, ?, 'over', 'pending', 0, 0)");
+        $q->bind_param("iss", $user_id, $alasan, $fotoPath);
+        if ($q->execute()) {
+            echo json_encode(['success'=>true, 'message'=>'Lembur Over Berhasil!']);
+        } else {
+            throw new Exception("Gagal simpan lembur: " . $q->error);
+        }
+        exit;
+    }
+
+    // ============================================================
+    // B. ABSEN HARIAN BIASA (JURUS ANTI-DOUBLE TANPA UNIQUE)
+    // ============================================================
+    
+    // 1. COBA INSERT HANYA JIKA BELUM ADA (WHERE NOT EXISTS)
+    // Teknik ini mencegah insert ganda walaupun tombol ditekan cepat
+    $ins = $conn->prepare("
+        INSERT INTO absen (user_id, tanggal, jam_masuk, masuk_lat, masuk_lng, foto_masuk, alasan, status) 
+        SELECT ?, CURDATE(), CURTIME(), ?, ?, ?, NULLIF(?, ''), 'HADIR'
+        FROM DUAL
+        WHERE NOT EXISTS (
+            SELECT id FROM absen WHERE user_id = ? AND tanggal = CURDATE()
+        )
+    ");
+    // Parameter: user_id, lat, lng, foto, alasan, user_id (buat cek)
+    $ins->bind_param("iddssi", $user_id, $lat, $lng, $fotoPath, $alasan, $user_id);
+    $ins->execute();
+
+    // 2. PASTI UPDATE (Hanya update data yang kosong/perlu direfresh)
+    // Kalau insert di atas berhasil (data baru) -> ini tidak ngefek banyak.
+    // Kalau insert di atas gagal (karena sudah ada) -> ini akan mengupdate data yang ada.
     $upd = $conn->prepare("
-      UPDATE absen
+        UPDATE absen 
         SET jam_masuk  = IFNULL(jam_masuk, CURTIME()),
-            masuk_lat  = IFNULL(masuk_lat,  ?),
-            masuk_lng  = IFNULL(masuk_lng,  ?),
+            masuk_lat  = ?, 
+            masuk_lng  = ?, 
             foto_masuk = IFNULL(foto_masuk, ?),
-            alasan     = CASE 
-                            WHEN COALESCE(status,'HADIR') IN ('IZIN','SAKIT')
-                              THEN IFNULL(alasan, NULLIF(?, ''))
-                            ELSE NULL
-                          END
-      WHERE user_id=? AND tanggal=CURDATE()
-      LIMIT 1
+            alasan     = IF(alasan IS NULL OR alasan = '', ?, alasan),
+            status     = 'HADIR'
+        WHERE user_id = ? AND tanggal = CURDATE()
     ");
     $upd->bind_param("ddssi", $lat, $lng, $fotoPath, $alasan, $user_id);
     $upd->execute();
 
+    // 2. Cek Reward Minggu
+    $hari_ini = (int)date('w'); 
+    $jam_skrg = date('H:i:s'); 
 
-  // kirim balik row hari ini
-  $sel = $conn->prepare("SELECT * FROM absen WHERE user_id=? AND tanggal=CURDATE() LIMIT 1");
-  $sel->bind_param("i", $user_id);
-  $sel->execute();
-  $row = $sel->get_result()->fetch_assoc();
+    if ($hari_ini === 0 && $jam_skrg <= START_TIME_REWARD) {
+        $cek = $conn->query("SELECT id FROM event_points_history WHERE user_id=$user_id AND DATE(created_at)=CURDATE() AND note LIKE '%Minggu%'");
+        if ($cek->num_rows == 0) {
+            $conn->query("INSERT INTO event_points_history (user_id, change_coins, type, note, created_at) VALUES ($user_id, 10000, 'earn', 'Reward Masuk Minggu', NOW())");
+        }
+    }
 
-  // panggil lembur/upsert (non-blocking)
-  try {
-    $payload = json_encode([
-      'user_id' => $user_id,
-      'tanggal' => date('Y-m-d'),
-      'alasan'  => ($alasan !== '' ? $alasan : null),
-      'action'  => 'masuk',
+    // ============================================================
+    // 🔥 3. AUTO LEMBUR PAGI (FILTER KETAT) 🔥
+    // ============================================================
+    $status_lembur = "Normal (Tidak Masuk Lembur)"; 
+
+    if ($jam_skrg < BATAS_LEMBUR_PAGI) {
+        
+        // Cek lagi biar gak dobel insert di tabel LEMBUR
+        $cekLemburPagi = $conn->query("SELECT id FROM lembur WHERE user_id = $user_id AND tanggal = CURDATE() AND jenis_lembur = 'biasa'");
+        
+        if ($cekLemburPagi->num_rows == 0) {
+            // Hitung selisih
+            $waktuDatang = strtotime($jam_skrg);
+            $waktuMasuk  = strtotime(JAM_TARGET_MASUK);
+            $selisih     = $waktuMasuk - $waktuDatang; 
+
+            if ($selisih > 0) {
+                $menitLembur = (int)floor($selisih / 60);
+                
+                if ($menitLembur > 0) {
+                    // Hitung Uang
+                    $uData = $conn->query("SELECT lembur FROM users WHERE id = $user_id")->fetch_assoc();
+                    $tarif = (float)($uData['lembur'] ?? 20000);
+                    $upah  = (int)ceil(($menitLembur / 60) * $tarif);
+                    $jamDecimal = round($menitLembur / 60, 2);
+
+                    $tglNow = date('Y-m-d');
+                    $jamMsk = $tglNow . ' ' . $jam_skrg;
+                    $jamKlr = $tglNow . ' ' . JAM_TARGET_MASUK;
+                    $ket    = "Lembur Pagi (Auto)";
+                    $nol    = 0; 
+
+                    $sqlLembur = "INSERT INTO lembur (
+                        user_id, tanggal, jam_masuk, jam_keluar, 
+                        total_menit, total_menit_masuk, total_menit_keluar, 
+                        total_jam, total_upah, 
+                        jenis_lembur, status, alasan, foto_bukti
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'biasa', 'approved', ?, ?)";
+
+                    $stmt = $conn->prepare($sqlLembur);
+                    $stmt->bind_param("isssiiidiss", 
+                        $user_id, $tglNow, $jamMsk, $jamKlr, 
+                        $menitLembur, $menitLembur, $nol,
+                        $jamDecimal, $upah, 
+                        $ket, $fotoPath
+                    );
+
+                    if ($stmt->execute()) {
+                        $status_lembur = "SUKSES INSERT LEMBUR ($menitLembur mnt)";
+                    }
+                }
+            }
+        }
+    }
+
+    // Response Akhir
+    $row = $conn->query("SELECT * FROM absen WHERE user_id=$user_id AND tanggal=CURDATE()")->fetch_assoc();
+
+    echo json_encode([
+        'success' => true, 
+        'message' => 'Absen Berhasil!', 
+        'data'    => $row,
+        'debug_lembur_status' => $status_lembur
     ]);
 
-    if (function_exists('curl_init')) {
-      // NOTE: kalau butuh auto-host seperti checkout, bisa ganti base host dinamis
-      $ch = curl_init("http://localhost/penggajian/api/lembur/upsert.php");
-      curl_setopt_array($ch, [
-        CURLOPT_POST => true,
-        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
-        CURLOPT_POSTFIELDS => $payload,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_CONNECTTIMEOUT => 2,
-        CURLOPT_TIMEOUT => 5,
-      ]);
-      curl_exec($ch);
-      curl_close($ch);
-    } else {
-      $ctx = stream_context_create([
-        'http' => [
-          'method'  => 'POST',
-          'header'  => "Content-Type: application/json\r\n",
-          'content' => $payload,
-          'timeout' => 5,
-        ],
-      ]);
-      @file_get_contents("http://localhost/penggajian/api/lembur/upsert.php", false, $ctx);
-    }
-  } catch (\Throwable $e) {
-    // jangan gagalkan check-in karena lembur gagal
-  }
-
-  echo json_encode(['success'=>true,'message'=>'Check-in OK','data'=>$row]);
 } catch (Throwable $e) {
-  http_response_code(500);
-  echo json_encode(['success'=>false,'message'=>$e->getMessage()]);
+    http_response_code(500);
+    echo json_encode(['success'=>false, 'message'=>'Error: '.$e->getMessage()]);
 }
+?>

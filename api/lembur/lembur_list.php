@@ -1,378 +1,207 @@
 <?php
+// api/lembur/lembur_list.php
 declare(strict_types=1);
+
+ini_set('display_errors', '0');
+error_reporting(E_ALL);
 
 header("Content-Type: application/json; charset=utf-8");
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type");
+
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(204); exit; }
 
-mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+require_once __DIR__ . '/../Koneksi.php';
 
-require_once __DIR__ . '/config_lembur.php'; // ⬅️ tambahkan ini
-
-/** ===== Aturan (deskripsi) =====
- * Lembur dihitung:
- * - SEBELUM LE_START_CUTOFF  => total_menit_masuk
- * - SETELAH  LE_END_CUTOFF   => total_menit_keluar
- * total_menit = masuk + keluar
- * Tidak ada upah.
- */
-const DB_NAME = 'penggajian_db';
-
-/** ===== Utils waktu ===== */
-function parseHm(string $hhmm): ?array {
-  // Support "HH:mm" atau "HH:mm:ss" → ambil bagian menitnya
-  if (!preg_match('/^\d{2}:\d{2}(:\d{2})?$/', $hhmm)) return null;
-  [$h, $m] = array_map('intval', explode(':', substr($hhmm, 0, 5))); // ambil "HH:mm"
-  if ($h < 0 || $h > 23 || $m < 0 || $m > 59) return null;
-  return [$h, $m];
-}
-function toMinutes(string $hhmm): ?int {
-  $p = parseHm($hhmm); if (!$p) return null;
-  return $p[0] * 60 + $p[1];
-}
-function minutesToHMM(int $minutes): string {
-  $h = intdiv($minutes, 60);
-  $m = $minutes % 60;
-  return sprintf('%d:%02d', $h, $m);
-}
-
-/** Hitung split lembur: [menitMasuk, menitKeluar]
- * - menitMasuk  = waktu sebelum LE_START_CUTOFF
- * - menitKeluar = waktu setelah LE_END_CUTOFF
- * Support cross-midnight (keluar < masuk → +24h).
- */
-function computeOvertimeSplit(string $jamMasuk, string $jamKeluar): array {
-  $in  = toMinutes($jamMasuk);
-  $out = toMinutes($jamKeluar);
-  if ($in === null || $out === null) return [0, 0];
-  if ($out < $in) $out += 24 * 60; // shift lewat tengah malam
-
-  $startCut = toMinutes(LE_START_CUTOFF); // dari SSoT
-  $endCut   = toMinutes(LE_END_CUTOFF);   // dari SSoT
-
-  // Lembur sebelum startCut: dari jamMasuk sampai min(startCut, jamKeluar)
-  $masuk = 0;
-  if ($in < $startCut) {
-    $masuk = max(0, min($startCut, $out) - $in);
-  }
-
-  // Lembur setelah endCut: dari max(endCut, jamMasuk) sampai jamKeluar
-  $keluar = 0;
-  if ($out > $endCut) {
-    $keluar = max(0, $out - max($endCut, $in));
-  }
-
-  return [$masuk, $keluar];
-}
-
-function hoursDecimal(int $minutes): float {
-  return round($minutes / 60.0, 2);
-}
-
-/** ===== Helper: cek kolom exist (sekali per request) ===== */
-function column_exists(mysqli $c, string $db, string $t, string $col): bool {
-  $sql = "SELECT 1 FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND COLUMN_NAME=? LIMIT 1";
-  $stmt = $c->prepare($sql);
-  $stmt->bind_param('sss', $db, $t, $col);
-  $stmt->execute();
-  $res = $stmt->get_result();
-  return (bool)$res->fetch_row();
+function jamKeMenit($str) {
+    if (!$str) return 0;
+    $j = substr(str_replace('.', ':', $str), 0, 5);
+    $p = explode(':', $j);
+    return ((int)$p[0] * 60) + (int)($p[1]??0);
 }
 
 try {
-  $db = new mysqli("localhost", "root", "", DB_NAME);
-  $db->set_charset("utf8mb4");
+    $method = $_SERVER['REQUEST_METHOD'];
+    $act    = $_GET['action'] ?? ($_POST['action'] ?? 'list');
 
-  // Cache ketersediaan kolom (opsional)
-  $HAS_JAM              = column_exists($db, DB_NAME, 'lembur', 'total_jam');
-  $HAS_MENIT_MASUK      = column_exists($db, DB_NAME, 'lembur', 'total_menit_masuk');
-  $HAS_MENIT_KELUAR     = column_exists($db, DB_NAME, 'lembur', 'total_menit_keluar');
+    // ==========================================================
+    // 1. GET: LIST DATA
+    // ==========================================================
+    if ($method === 'GET') {
+        if ($act === 'config') {
+            // Default global (fallback jika user rate 0)
+            echo json_encode(["start_cutoff" => "08:00", "end_cutoff" => "17:00", "rate_per_menit" => 166]); exit;
+        }
+        
+        if ($act === 'list') {
+            $filter_uid = isset($_GET['user_id']) ? (int)$_GET['user_id'] : 0;
+            
+            // Filter hanya yang ada durasinya
+            $syarat = ["l.total_menit > 0"];
+            if ($filter_uid > 0) {
+                $syarat[] = "l.user_id = $filter_uid";
+            }
+            $sql_where = "WHERE " . implode(" AND ", $syarat);
+            
+            // 🔥 UPDATE QUERY: Ambil u.lembur sebagai 'upah_db'
+            $sql = "SELECT 
+                        l.*, 
+                        COALESCE(u.nama_lengkap, u.username) as nama, 
+                        u.lembur as upah_db 
+                    FROM lembur l 
+                    LEFT JOIN users u ON u.id = l.user_id 
+                    $sql_where 
+                    ORDER BY l.tanggal DESC LIMIT 200";
+            
+            $res = $conn->query($sql);
+            $rows = [];
+            
+            while ($r = $res->fetch_assoc()) {
+                // Pastikan tipe data benar
+                $r['total_upah']   = (int)($r['total_upah']);
+                $r['total_menit']  = (int)($r['total_menit']);
+                $r['jenis_lembur'] = !empty($r['jenis_lembur']) ? $r['jenis_lembur'] : 'biasa';
+                
+                // 🔥 LOGIC RATE PER USER 🔥
+                // 1. Ambil dari DB user (upah_db)
+                $ratePerJamUser = (int)($r['upah_db'] ?? 0);
+                
+                // 2. Jika user tidak punya seting upah (0), pakai default 10.000
+                if ($ratePerJamUser <= 0) $ratePerJamUser = 10000;
 
-  $method = $_SERVER['REQUEST_METHOD'];
-  $action = $_GET['action'] ?? ($_POST['action'] ?? '');
+                // 3. Masukkan ke array response dengan key yang konsisten
+                $r['rate_per_jam'] = $ratePerJamUser;
 
-  /* ===================== GET: config ===================== *
-   * Frontend bisa ambil cutoff/rate langsung dari sini.
-   */
-    if ($method === 'GET' && $action === 'config') {
-      echo json_encode([
-        'success'        => true,
-        'start_cutoff'   => LE_START_CUTOFF,
-        'end_cutoff'     => LE_END_CUTOFF,
-        'rate_per_jam'   => defined('LE_RATE_PER_JAM')   ? LE_RATE_PER_JAM   : null,
-        'rate_per_menit' => defined('LE_RATE_PER_MENIT') ? LE_RATE_PER_MENIT : null,
-      ], JSON_UNESCAPED_UNICODE);
-      exit;
+                // 🔥 LOGIC FIX: Jika total_upah di DB 0 (data lama), hitung ulang
+                if ($r['total_upah'] === 0 && $r['total_menit'] > 0) {
+                      $pengali = ($r['jenis_lembur'] === 'over') ? 2 : 1;
+                      // Rumus: (Menit / 60) * RateJam * Pengali
+                      $r['total_upah'] = (int)ceil(((float)$r['total_menit'] / 60) * ((float)$ratePerJamUser * $pengali));
+                }
+                
+                $rows[] = $r;
+            }
+            echo json_encode(['success' => true, 'data' => $rows]); exit;
+        }
     }
 
-  /* ===================== GET: list ===================== *
-   * Query opsional: start, end, user_id, q (nama)
-   * Return: total_menit_masuk, total_menit_keluar, total_menit, total_jam
-   */
-  if ($method === 'GET' && $action === 'list') {
-    $where=[]; $params=[]; $types='';
+    // ==========================================================
+    // 2. POST: SIMPAN / EDIT / DELETE
+    // ==========================================================
+    if ($method === 'POST') {
+        $input  = json_decode(file_get_contents('php://input'), true);
+        $data   = $input['data'] ?? [];
+        $action = $input['action'] ?? '';
 
-    if (!empty($_GET['start']))   { $where[]='l.tanggal >= ?'; $params[]=$_GET['start']; $types.='s'; }
-    if (!empty($_GET['end']))     { $where[]='l.tanggal <= ?'; $params[]=$_GET['end'];   $types.='s'; }
-    if (!empty($_GET['user_id'])) { $where[]='l.user_id = ?';  $params[]=(int)$_GET['user_id']; $types.='i'; }
-    if (!empty($_GET['q']))       { $where[]='COALESCE(u.nama_lengkap, u.username) LIKE ?'; $params[]='%'.$_GET['q'].'%'; $types.='s'; }
+        // --- A. DELETE ---
+        if ($action === 'delete') {
+            $id = (int)($input['id'] ?? ($data['id'] ?? 0));
+            if ($id <= 0) throw new Exception("ID tidak valid");
+            $conn->query("DELETE FROM lembur WHERE id = $id");
+            echo json_encode(["success" => true, "message" => "Data dihapus"]); exit;
+        }
 
-    $selectExtra = [];
-    if ($HAS_JAM)          $selectExtra[] = 'l.total_jam';
-    if ($HAS_MENIT_MASUK)  $selectExtra[] = 'l.total_menit_masuk';
-    if ($HAS_MENIT_KELUAR) $selectExtra[] = 'l.total_menit_keluar';
-    $selectExtraSql = $selectExtra ? ', '.implode(', ', $selectExtra) : '';
+        // --- B. CREATE / EDIT ---
+        $user_id = (int)($data['user_id'] ?? 0);
+        
+        // Ambil data user untuk mendapatkan TARIF LEMBUR
+        $qU = $conn->query("SELECT id, lembur FROM users WHERE id = $user_id LIMIT 1");
+        $uData = $qU->fetch_assoc();
+        
+        // Fallback cari by nama jika ID kosong/salah
+        if (!$uData) { 
+             $nm = $conn->real_escape_string($data['nama']??'');
+             $uData = $conn->query("SELECT id, lembur FROM users WHERE nama_lengkap = '$nm' LIMIT 1")->fetch_assoc();
+        }
+        if (!$uData) throw new Exception("User tidak ditemukan!");
 
-    $sql = "
-      SELECT l.id, l.user_id, l.tanggal, l.jam_masuk, l.jam_keluar, l.alasan, l.total_menit,
-             COALESCE(u.nama_lengkap, u.username) AS nama
-             $selectExtraSql
-      FROM lembur l
-      JOIN users u ON u.id = l.user_id
-    ";
-    if ($where) $sql .= ' WHERE '.implode(' AND ', $where);
-    $sql .= ' ORDER BY l.tanggal DESC, l.jam_masuk ASC';
+        $real_user_id = $uData['id'];
+        
+        // 🔥 UPDATE: Tarif Dasar ambil dari kolom 'lembur'. Jika 0, default 10.000
+        $tarif_user   = (float)$uData['lembur']; 
+        $TARIF_DASAR  = ($tarif_user > 0) ? $tarif_user : 10000; 
+        
+        // Rate per menit = Tarif Jam / 60
+        $RATE_PER_MENIT = $TARIF_DASAR / 60;
 
-    $stmt = $db->prepare($sql);
-    if ($params) $stmt->bind_param($types, ...$params);
-    $stmt->execute();
-    $res = $stmt->get_result();
+        // 1. Konversi Jam
+        $mMasuk  = jamKeMenit($data['jam_masuk']);
+        $mKeluar = jamKeMenit($data['jam_keluar']);
+        if ($mKeluar < $mMasuk) $mKeluar += 1440; 
 
-    $rows = [];
-    while ($r = $res->fetch_assoc()) {
-      $r['id']          = (int)$r['id'];
-      $r['user_id']     = (int)$r['user_id'];
-      $r['total_menit'] = isset($r['total_menit']) ? (int)$r['total_menit'] : 0;
+        // 2. Hitung Durasi (Potong jam kerja 08:00-17:00)
+        $MENIT_08_00 = 8 * 60;  
+        $MENIT_17_00 = 17 * 60; 
 
-      // derive menit_masuk / menit_keluar kalau kolom belum ada
-      $menit_masuk  = $HAS_MENIT_MASUK  && isset($r['total_menit_masuk'])  ? (int)$r['total_menit_masuk']  : null;
-      $menit_keluar = $HAS_MENIT_KELUAR && isset($r['total_menit_keluar']) ? (int)$r['total_menit_keluar'] : null;
+        $menit_lembur_pagi = 0;
+        if ($mMasuk < $MENIT_08_00) {
+            $batas_akhir_pagi = min($mKeluar, $MENIT_08_00);
+            $menit_lembur_pagi = max(0, $batas_akhir_pagi - $mMasuk);
+        }
 
-      if ($menit_masuk === null || $menit_keluar === null) {
-        // Hitung dari jam untuk memastikan respons lengkap
-        [$mMasuk, $mKeluar] = computeOvertimeSplit((string)$r['jam_masuk'], (string)$r['jam_keluar']);
-        if ($menit_masuk === null)  $menit_masuk = $mMasuk;
-        if ($menit_keluar === null) $menit_keluar = $mKeluar;
-      }
+        $menit_lembur_sore = 0;
+        if ($mKeluar > $MENIT_17_00) {
+            $batas_awal_sore = max($mMasuk, $MENIT_17_00);
+            $menit_lembur_sore = max(0, $mKeluar - $batas_awal_sore);
+        }
 
-      $r['total_menit_masuk']  = $menit_masuk;
-      $r['total_menit_keluar'] = $menit_keluar;
+        $total_menit = $menit_lembur_pagi + $menit_lembur_sore;
+        
+        // Validasi Hapus jika durasi 0
+        if ($total_menit <= 0) {
+            if ($action === 'create') {
+                echo json_encode(["success" => false, "message" => "Total lembur 0 menit (Masuk jam kerja normal)."]);
+                exit;
+            } elseif ($action === 'edit') {
+                $id = (int)$data['id'];
+                $conn->query("DELETE FROM lembur WHERE id = $id");
+                echo json_encode(["success" => true, "message" => "Data dihapus karena durasi jadi 0."]);
+                exit;
+            }
+        }
 
-      // total_menit konsisten = masuk + keluar
-      $total_calc = $menit_masuk + $menit_keluar;
-      $r['total_menit'] = $total_calc;
+        $total_jam_desimal = round($total_menit / 60, 2);
 
-      // total_jam (kolom ada → pakai; kalau tidak → hitung dari total_calc)
-      $r['total_jam'] = ($HAS_JAM && isset($r['total_jam']) && $r['total_jam'] !== null)
-                        ? (string)$r['total_jam'] : minutesToHMM($total_calc);
+        // 3. Hitung Total Upah
+        $rawJenis = $data['jenis_lembur'] ?? $data['jenis'] ?? 'biasa';
+        $jenis_lembur = strtolower($rawJenis); 
 
-      $rows[] = $r;
-    }
-    echo json_encode(['rows' => $rows], JSON_UNESCAPED_UNICODE);
-    exit;
-  }
+        // Kalau OVER, tarif dikali 2
+        $multiplier = ($jenis_lembur === 'over') ? 2 : 1;
+        
+        // Rumus: Total Menit * (Rate Per Menit * Multiplier)
+        $TOTAL_UPAH = (int)ceil($total_menit * ($RATE_PER_MENIT * $multiplier));
 
-  /* ===================== GET: rekap ===================== *
-   * Rekap per user: sum menit_masuk, sum menit_keluar, total
-   */
-  if ($method === 'GET' && $action === 'rekap') {
-    $where=[]; $params=[]; $types='';
-    if (!empty($_GET['start']))   { $where[]='l.tanggal >= ?'; $params[]=$_GET['start']; $types.='s'; }
-    if (!empty($_GET['end']))     { $where[]='l.tanggal <= ?'; $params[]=$_GET['end'];   $types.='s'; }
-    if (!empty($_GET['user_id'])) { $where[]='l.user_id = ?';  $params[]=(int)$_GET['user_id']; $types.='i'; }
+        // Params for SQL
+        $tgl = $data['tanggal'];
+        $jm  = $data['jam_masuk'];
+        $jk  = $data['jam_keluar'];
+        $al  = $data['alasan'] ?? '';
+        $alk = $data['alasan_keluar'] ?? '';
 
-    $canSumInSql  = $HAS_MENIT_MASUK;
-    $canSumOutSql = $HAS_MENIT_KELUAR;
+        if ($action === 'create') {
+            $stmt = $conn->prepare("INSERT INTO lembur (user_id, tanggal, jam_masuk, jam_keluar, alasan, alasan_keluar, jenis_lembur, total_menit, total_menit_masuk, total_menit_keluar, total_jam, total_upah) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
+            $stmt->bind_param("issssssiiidi", $real_user_id, $tgl, $jm, $jk, $al, $alk, $jenis_lembur, $total_menit, $menit_lembur_pagi, $menit_lembur_sore, $total_jam_desimal, $TOTAL_UPAH);
+            $stmt->execute();
+        } 
+        else if ($action === 'edit') {
+            $id = (int)$data['id'];
+            $stmt = $conn->prepare("UPDATE lembur SET user_id=?, tanggal=?, jam_masuk=?, jam_keluar=?, alasan=?, alasan_keluar=?, jenis_lembur=?, total_menit=?, total_menit_masuk=?, total_menit_keluar=?, total_jam=?, total_upah=? WHERE id=?");
+            $stmt->bind_param("issssssiiidii", $real_user_id, $tgl, $jm, $jk, $al, $alk, $jenis_lembur, $total_menit, $menit_lembur_pagi, $menit_lembur_sore, $total_jam_desimal, $TOTAL_UPAH, $id);
+            $stmt->execute();
+        }
 
-    if ($canSumInSql && $canSumOutSql) {
-      $sql = "
-        SELECT l.user_id, COALESCE(u.nama_lengkap, u.username) AS nama,
-               COALESCE(SUM(l.total_menit_masuk),0)  AS sum_masuk,
-               COALESCE(SUM(l.total_menit_keluar),0) AS sum_keluar
-        FROM lembur l
-        JOIN users u ON u.id = l.user_id
-      ";
-      if ($where) $sql .= ' WHERE '.implode(' AND ', $where);
-      $sql .= ' GROUP BY l.user_id, nama ORDER BY nama ASC';
-
-      $stmt = $db->prepare($sql);
-      if ($params) $stmt->bind_param($types, ...$params);
-      $stmt->execute();
-      $res = $stmt->get_result();
-
-      $rows = [];
-      while ($r = $res->fetch_assoc()) {
-        $masuk  = (int)$r['sum_masuk'];
-        $keluar = (int)$r['sum_keluar'];
-        $total  = $masuk + $keluar;
-        $rows[] = [
-          'user_id'             => (int)$r['user_id'],
-          'nama'                => $r['nama'],
-          'total_menit_masuk'   => $masuk,
-          'total_menit_keluar'  => $keluar,
-          'total_menit'         => $total,
-          'total_jam'           => minutesToHMM($total),
-        ];
-      }
-      echo json_encode(['rows' => $rows], JSON_UNESCAPED_UNICODE);
-      exit;
-    } else {
-      // Fallback: tarik baris2 lalu agregasi di PHP
-      $sql = "
-        SELECT l.user_id, COALESCE(u.nama_lengkap, u.username) AS nama,
-               l.jam_masuk, l.jam_keluar
-        FROM lembur l
-        JOIN users u ON u.id = l.user_id
-      ";
-      if ($where) $sql .= ' WHERE '.implode(' AND ', $where);
-      $sql .= ' ORDER BY l.user_id ASC, l.tanggal ASC';
-
-      $stmt = $db->prepare($sql);
-      if ($params) $stmt->bind_param($types, ...$params);
-      $stmt->execute();
-      $res = $stmt->get_result();
-
-      $agg = []; // user_id => [nama, masuk, keluar]
-      while ($row = $res->fetch_assoc()) {
-        $uid = (int)$row['user_id'];
-        if (!isset($agg[$uid])) $agg[$uid] = ['nama' => $row['nama'], 'masuk' => 0, 'keluar' => 0];
-        [$mIn, $mOut] = computeOvertimeSplit((string)$row['jam_masuk'], (string)$row['jam_keluar']);
-        $agg[$uid]['masuk']  += $mIn;
-        $agg[$uid]['keluar'] += $mOut;
-      }
-      $rows=[];
-      foreach ($agg as $uid => $v) {
-        $total = $v['masuk'] + $v['keluar'];
-        $rows[] = [
-          'user_id'            => $uid,
-          'nama'               => $v['nama'],
-          'total_menit_masuk'  => $v['masuk'],
-          'total_menit_keluar' => $v['keluar'],
-          'total_menit'        => $total,
-          'total_jam'          => minutesToHMM($total),
-        ];
-      }
-      echo json_encode(['rows' => $rows], JSON_UNESCAPED_UNICODE);
-      exit;
-    }
-  }
-
-  /* ===================== POST: create / edit ===================== *
-   * (tidak berubah selain perhitungan split pakai SSoT)
-   */
-  if ($method === 'POST') {
-    $input = json_decode(file_get_contents('php://input'), true);
-    if (!$input) { http_response_code(400); echo json_encode(['error'=>'Data tidak valid']); exit; }
-
-    $data = $input['data'] ?? null;
-    if (!$data) { http_response_code(400); echo json_encode(['error'=>'Data lembur kosong']); exit; }
-
-    // user_id atau nama
-    $user_id = isset($data['user_id']) ? (int)$data['user_id'] : 0;
-    if ($user_id <= 0) {
-      $nama = trim((string)($data['nama'] ?? ''));
-      if ($nama === '') { http_response_code(400); echo json_encode(['error'=>'Nama atau user_id wajib diisi']); exit; }
-      $stmtU = $db->prepare("SELECT id FROM users WHERE COALESCE(nama_lengkap, username) = ? LIMIT 1");
-      $stmtU->bind_param('s', $nama);
-      $stmtU->execute();
-      $resU = $stmtU->get_result();
-      if ($resU->num_rows === 0) { http_response_code(400); echo json_encode(['error'=>"User '$nama' tidak ditemukan"]); exit; }
-      $user_id = (int)$resU->fetch_assoc()['id'];
+        echo json_encode([
+            "success" => true, 
+            "message" => "Berhasil Simpan",
+            "debug" => ["rate_dasar" => $TARIF_DASAR, "upah_final" => $TOTAL_UPAH]
+        ]);
+        exit;
     }
 
-    $tanggal    = (string)($data['tanggal'] ?? '');
-    $jam_masuk  = (string)($data['jam_masuk'] ?? '');
-    $jam_keluar = (string)($data['jam_keluar'] ?? '');
-    $alasan     = (string)($data['alasan'] ?? '');
-
-    $hasInOut = (parseHm($jam_masuk) !== null && parseHm($jam_keluar) !== null);
-    [$mMasuk, $mKeluar] = $hasInOut ? computeOvertimeSplit($jam_masuk, $jam_keluar) : [0, 0];
-    $total_menit   = $mMasuk + $mKeluar;
-    $total_jam_dec = hoursDecimal($total_menit); // ✅ desimal, cocok DECIMAL(6,2)
-    $total_jam_str = minutesToHMM($total_menit); // (opsional) buat respons ke FE
-
-    if (($input['action'] ?? '') === 'create') {
-      if ($HAS_JAM && $HAS_MENIT_MASUK && $HAS_MENIT_KELUAR) {
-        $stmt = $db->prepare("
-          INSERT INTO lembur (user_id, tanggal, jam_masuk, jam_keluar, alasan,
-                              total_menit, total_jam, total_menit_masuk, total_menit_keluar)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ");
-        $stmt->bind_param(
-          'issssidii', 
-          $user_id, $tanggal, $jam_masuk, $jam_keluar, $alasan,
-          $total_menit, $total_jam_dec, $mMasuk, $mKeluar
-        );
-      } else {
-        $stmt = $db->prepare("
-          INSERT INTO lembur (user_id, tanggal, jam_masuk, jam_keluar, alasan, total_menit)
-          VALUES (?, ?, ?, ?, ?, ?)
-        ");
-        $stmt->bind_param('issssi',
-          $user_id, $tanggal, $jam_masuk, $jam_keluar, $alasan, $total_menit
-        );
-      }
-      $stmt->execute();
-     echo json_encode([
-      'success'             => true,
-      'id'                  => $stmt->insert_id,
-      'total_menit_masuk'   => $mMasuk,
-      'total_menit_keluar'  => $mKeluar,
-      'total_menit'         => $total_menit,
-      'total_jam'           => $total_jam_str,   // untuk tampilan H:MM
-      'total_jam_dec'       => $total_jam_dec,   // kalau FE mau angka
-    ], JSON_UNESCAPED_UNICODE);
-      exit;
-    }
-
-    if (($input['action'] ?? '') === 'edit') {
-      $id = (int)($data['id'] ?? 0);
-      if ($id <= 0) { http_response_code(400); echo json_encode(['error'=>'ID lembur tidak valid']); exit; }
-
-      if ($HAS_JAM && $HAS_MENIT_MASUK && $HAS_MENIT_KELUAR) {
-        $stmt = $db->prepare("
-          UPDATE lembur SET user_id=?, tanggal=?, jam_masuk=?, jam_keluar=?, alasan=?,
-                            total_menit=?, total_jam=?, total_menit_masuk=?, total_menit_keluar=?
-          WHERE id=?
-        ");
-        $stmt->bind_param(
-          'issssisiii', // i s s s s i s i i i
-          $user_id, $tanggal, $jam_masuk, $jam_keluar, $alasan,
-          $total_menit, $total_jam, $mMasuk, $mKeluar, $id
-        );
-      } else {
-        $stmt = $db->prepare("
-          UPDATE lembur SET user_id=?, tanggal=?, jam_masuk=?, jam_keluar=?, alasan=?, total_menit=?
-          WHERE id=?
-        ");
-        $stmt->bind_param('issssii',
-          $user_id, $tanggal, $jam_masuk, $jam_keluar, $alasan, $total_menit, $id
-        );
-      }
-      $stmt->execute();
-
-      echo json_encode([
-        'success'             => true,
-        'total_menit_masuk'   => $mMasuk,
-        'total_menit_keluar'  => $mKeluar,
-        'total_menit'         => $total_menit,
-        'total_jam'           => $total_jam
-      ], JSON_UNESCAPED_UNICODE);
-      exit;
-    }
-
-    http_response_code(400);
-    echo json_encode(['error' => "Action '".($input['action'] ?? '')."' tidak dikenali"], JSON_UNESCAPED_UNICODE);
-    exit;
-  }
-
-  http_response_code(400);
-  echo json_encode(['error' => "Action '$action' tidak dikenali"], JSON_UNESCAPED_UNICODE);
-
-} catch (Throwable $e) {
-  http_response_code(500);
-  echo json_encode(['error' => 'Server error: '.$e->getMessage()], JSON_UNESCAPED_UNICODE);
+} catch (Exception $e) {
+    http_response_code(500);
+    echo json_encode(["success" => false, "error" => $e->getMessage()]);
 }
+?>
