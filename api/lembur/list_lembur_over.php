@@ -1,23 +1,27 @@
-    <?php
-    header("Access-Control-Allow-Origin: *");
-    header("Content-Type: application/json");
+<?php
+header("Access-Control-Allow-Origin: *");
+header("Content-Type: application/json");
 
-    include '../Koneksi.php';
+include '../Koneksi.php';
 
-    // Query Join ke tabel Users biar dapet Nama Lengkap
-    $sql = "SELECT l.*, u.nama_lengkap, u.lembur as tarif_lembur 
-            FROM lembur l 
-            JOIN users u ON l.user_id = u.id 
-            WHERE l.jenis_lembur = 'over' 
-            AND l.status = 'pending' 
-            ORDER BY l.tanggal DESC, l.jam_masuk DESC";
+// HAPUS filter "AND l.status = ..." supaya semua muncul.
+// Gunakan ORDER BY CASE/FIELD supaya 'pending' muncul paling atas.
 
-    $result = $conn->query($sql);
+$sql = "SELECT l.*, u.nama_lengkap, u.lembur as tarif_lembur 
+        FROM lembur l 
+        JOIN users u ON l.user_id = u.id 
+        WHERE l.jenis_lembur = 'over' 
+        ORDER BY 
+            CASE WHEN l.status = 'pending' THEN 1 ELSE 2 END ASC, -- Prioritaskan Pending
+            l.tanggal DESC, -- Sisanya urutkan berdasarkan tanggal terbaru
+            l.jam_masuk DESC";
 
-    $data = array();
-    while($row = $result->fetch_assoc()) {
-        $data[] = $row;
-    }
+$result = $conn->query($sql);
 
-    echo json_encode(["success" => true, "data" => $data]);
-    ?>
+$data = array();
+while($row = $result->fetch_assoc()) {
+    $data[] = $row;
+}
+
+echo json_encode(["success" => true, "data" => $data]);
+?>

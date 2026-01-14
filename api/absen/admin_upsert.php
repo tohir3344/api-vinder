@@ -28,7 +28,6 @@ try {
   $status     = isset($json['status']) ? strtoupper(trim((string)$json['status'])) : 'HADIR';
   
   // 🔥 TANGKAP DUA ALASAN DARI FRONTEND 🔥
-  // 'alasan' dari frontend itu isinya alasan_masuk
   $input_alasan_masuk  = !empty($json['alasan']) ? $json['alasan'] : null;
   $input_alasan_keluar = !empty($json['alasan_keluar']) ? $json['alasan_keluar'] : null;
 
@@ -38,10 +37,6 @@ try {
   // PART 1: LOGIC ABSEN (Tabel 'absen')
   // ========================================================
   
-  // Aturan User: "Di halaman absensi gausah tampil alasan lembur"
-  // Jadi: Kalau status HADIR, kita kosongin alasan di tabel absen.
-  // Kalau status IZIN/SAKIT/ALPHA, baru kita pake alasannya.
-  
   $alasan_untuk_absen = null;
   if ($status !== 'HADIR') {
       $alasan_untuk_absen = $input_alasan_masuk; 
@@ -50,7 +45,6 @@ try {
   if ($mode === 'update') {
     if (!$id) throw new Exception("ID wajib untuk update");
     $stmt = $conn->prepare("UPDATE absen SET user_id=?, tanggal=?, jam_masuk=?, jam_keluar=?, status=?, alasan=? WHERE id=?");
-    // Perhatikan: parameter terakhir alasan_untuk_absen
     $stmt->bind_param("isssssi", $user_id, $tanggal, $jam_masuk, $jam_keluar, $status, $alasan_untuk_absen, $id);
     $stmt->execute();
   } else {
@@ -68,18 +62,28 @@ try {
   // PART 2: LOGIC LEMBUR (Tabel 'lembur')
   // ========================================================
   
-  // Kalau status HADIR, baru kita urus lemburnya
-  // Atau kalau lu mau tetep catet lembur meski statusnya 'DINAS LUAR' bisa disesuaikan.
-  // Default: Kita hitung aja.
+  // --------------------------------------------------------
+  // 🔥 PERBAIKAN UTAMA DI SINI 🔥
+  // Ambil Rate dari tabel Users, JANGAN pakai konstanta global
+  // --------------------------------------------------------
+  $qUser = $conn->prepare("SELECT lembur FROM users WHERE id = ?");
+  $qUser->bind_param("i", $user_id);
+  $qUser->execute();
+  $rUser = $qUser->get_result()->fetch_assoc();
+  
+  // Ambil tarif per jam dari DB, misal 20000
+  $hourly_rate = isset($rUser['lembur']) ? (float)$rUser['lembur'] : 0;
+  
+  // Konversi ke tarif per menit (karena hitungan di bawah pakai menit)
+  $rate_per_min = ($hourly_rate > 0) ? ($hourly_rate / 60) : 0;
 
-  $rate_per_min = LE_RATE_PER_MENIT; 
 
   // 1. HITUNG LEMBUR MASUK
   $total_menit_masuk = 0;
   if ($jam_masuk) {
     $ts_masuk  = strtotime("$tanggal $jam_masuk");
-    $ts_limit  = strtotime("$tanggal " . LE_START_CUTOFF); // 07:30
-    $ts_base   = strtotime("$tanggal " . OFFICE_START_TIME); // 08:00
+    $ts_limit  = strtotime("$tanggal " . LE_START_CUTOFF); 
+    $ts_base   = strtotime("$tanggal " . OFFICE_START_TIME); 
 
     if ($ts_masuk < $ts_limit) {
         $total_menit_masuk = round(($ts_base - $ts_masuk) / 60);
@@ -90,8 +94,8 @@ try {
   $total_menit_keluar = 0;
   if ($jam_keluar) {
     $ts_keluar = strtotime("$tanggal $jam_keluar");
-    $ts_limit  = strtotime("$tanggal " . LE_END_CUTOFF); // 17:30
-    $ts_base   = strtotime("$tanggal " . OFFICE_END_TIME); // 17:00
+    $ts_limit  = strtotime("$tanggal " . LE_END_CUTOFF); 
+    $ts_base   = strtotime("$tanggal " . OFFICE_END_TIME); 
 
     if ($ts_keluar > $ts_limit) {
         $total_menit_keluar = round(($ts_keluar - $ts_base) / 60);
@@ -100,10 +104,11 @@ try {
 
   $total_menit = $total_menit_masuk + $total_menit_keluar;
   $total_jam   = $total_menit / 60;
+  
+  // Hitung duitnya pakai rate dinamis yang tadi diambil
   $total_upah  = $total_menit * $rate_per_min;
 
   // --- PART 3: SIMPAN KE TABEL LEMBUR (FULL DATA) ---
-  // Di sini kita simpan input_alasan_masuk & input_alasan_keluar
   
   $cekL = $conn->prepare("SELECT id FROM lembur WHERE user_id=? AND tanggal=?");
   $cekL->bind_param("is", $user_id, $tanggal);
@@ -114,11 +119,10 @@ try {
       // UPDATE
       $lembur_id = $rowL['id'];
       
-      // Pastikan kolom 'alasan_keluar' ada di database lu ya!
       $upd = $conn->prepare("UPDATE lembur SET 
           jam_masuk=?, jam_keluar=?, 
-          alasan=?,        -- Alasan Masuk
-          alasan_keluar=?, -- Alasan Keluar (NEW)
+          alasan=?,        
+          alasan_keluar=?, 
           total_menit_masuk=?, total_menit_keluar=?, 
           total_menit=?, total_upah=?, total_jam=?
           WHERE id=?");
@@ -148,11 +152,11 @@ try {
 
   echo json_encode([
       "success" => true, 
-      "message" => "Data tersimpan! Absen bersih, Lembur lengkap.",
+      "message" => "Data tersimpan! Perhitungan upah lembur sudah sesuai rate user.",
       "debug" => [
-         "alasan_absen" => $alasan_untuk_absen,
-         "alasan_lembur_masuk" => $input_alasan_masuk,
-         "alasan_lembur_keluar" => $input_alasan_keluar
+         "rate_user_per_jam" => $hourly_rate, // Cek ini di console log nanti
+         "rate_per_menit" => $rate_per_min,
+         "total_upah" => $total_upah
       ]
   ]);
 
