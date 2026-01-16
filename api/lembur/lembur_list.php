@@ -39,12 +39,17 @@ try {
             
             // Filter hanya yang ada durasinya
             $syarat = ["l.total_menit > 0"];
+            
             if ($filter_uid > 0) {
                 $syarat[] = "l.user_id = $filter_uid";
             }
+
+            // 🔥 PERBAIKAN: Filter agar status Reject TIDAK MUNCUL
+            $syarat[] = "(l.status IS NULL OR l.status NOT LIKE '%reject%')";
+
             $sql_where = "WHERE " . implode(" AND ", $syarat);
             
-            // 🔥 UPDATE QUERY: Ambil u.lembur sebagai 'upah_db'
+            // Ambil u.lembur sebagai 'upah_db'
             $sql = "SELECT 
                         l.*, 
                         COALESCE(u.nama_lengkap, u.username) as nama, 
@@ -63,23 +68,26 @@ try {
                 $r['total_menit']  = (int)($r['total_menit']);
                 $r['jenis_lembur'] = !empty($r['jenis_lembur']) ? $r['jenis_lembur'] : 'biasa';
                 
-                // 🔥 LOGIC RATE PER USER 🔥
+                // --- LOGIC RATE PER USER ---
                 // 1. Ambil dari DB user (upah_db)
                 $ratePerJamUser = (int)($r['upah_db'] ?? 0);
                 
                 // 2. Jika user tidak punya seting upah (0), pakai default 10.000
                 if ($ratePerJamUser <= 0) $ratePerJamUser = 10000;
 
-                // 3. Masukkan ke array response dengan key yang konsisten
+                // 3. Masukkan ke array response
                 $r['rate_per_jam'] = $ratePerJamUser;
 
-                // 🔥 LOGIC FIX: Jika total_upah di DB 0 (data lama), hitung ulang
+                // --- LOGIC FIX: Jika total_upah di DB 0 (data lama), hitung ulang ---
                 if ($r['total_upah'] === 0 && $r['total_menit'] > 0) {
                       $pengali = ($r['jenis_lembur'] === 'over') ? 2 : 1;
                       // Rumus: (Menit / 60) * RateJam * Pengali
                       $r['total_upah'] = (int)ceil(((float)$r['total_menit'] / 60) * ((float)$ratePerJamUser * $pengali));
                 }
                 
+                // Pastikan status selalu ada (cegah null)
+                $r['status'] = !empty($r['status']) ? strtolower($r['status']) : 'pending';
+
                 $rows[] = $r;
             }
             echo json_encode(['success' => true, 'data' => $rows]); exit;
@@ -118,7 +126,7 @@ try {
 
         $real_user_id = $uData['id'];
         
-        // 🔥 UPDATE: Tarif Dasar ambil dari kolom 'lembur'. Jika 0, default 10.000
+        // Tarif Dasar ambil dari kolom 'lembur'. Jika 0, default 10.000
         $tarif_user   = (float)$uData['lembur']; 
         $TARIF_DASAR  = ($tarif_user > 0) ? $tarif_user : 10000; 
         
