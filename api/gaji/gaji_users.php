@@ -28,11 +28,10 @@ if (!$mysqli) {
 }
 
 try {
-  // ===== Charset: fallback kalau utf8mb4 nggak didukung =====
+  // ===== Charset fallback =====
   try {
     $mysqli->set_charset('utf8mb4');
   } catch (Throwable $e) {
-    // fallback ke utf8 (lebih tua, tapi aman di hosting jadul)
     $mysqli->set_charset('utf8');
   }
 
@@ -43,10 +42,13 @@ try {
     $cols[strtolower($c['Field'])] = true;
   }
 
+  // Kandidat nama kolom
   $idCandidates   = ['id', 'id_user', 'user_id'];
   $nameCandidates = ['nama', 'name', 'nama_lengkap', 'full_name', 'username', 'email'];
+  // 🔥 UPDATE: Tambah kandidat untuk kolom POSISI/JABATAN
+  $roleCandidates = ['posisi', 'role', 'jabatan', 'level', 'tipe_user', 'hak_akses'];
 
-  // Kolom ID
+  // 1. Cari Kolom ID
   $idCol = null;
   foreach ($idCandidates as $c) {
     if (isset($cols[$c])) { $idCol = $c; break; }
@@ -60,13 +62,13 @@ try {
     exit;
   }
 
-  // Kolom nama yang ada
+  // 2. Cari Kolom Nama
   $existingNameCols = [];
   foreach ($nameCandidates as $c) {
     if (isset($cols[$c])) $existingNameCols[] = $c;
   }
 
-  // Kolom gaji (opsional)
+  // 3. Cari Kolom Gaji
   $gajiCol = null;
   if (isset($cols['gaji'])) {
     $gajiCol = 'gaji';
@@ -74,24 +76,33 @@ try {
     $gajiCol = 'salary';
   }
 
-  // SELECT hanya kolom yang ada
+  // 4. 🔥 UPDATE: Cari Kolom Posisi/Role
+  $roleCol = null;
+  foreach ($roleCandidates as $c) {
+    if (isset($cols[$c])) { $roleCol = $c; break; }
+  }
+
+  // ===== Susun Query SELECT =====
   $selectCols = [$idCol];
   foreach ($existingNameCols as $c) $selectCols[] = $c;
   if ($gajiCol) $selectCols[] = $gajiCol;
+  if ($roleCol) $selectCols[] = $roleCol; // <-- Masukkan kolom posisi ke query
 
-  // <<<— DI SINI: ganti arrow function fn() => dengan function biasa
+  // Bungkus nama kolom dengan backtick `
   $wrapped = array_map(function ($x) {
     return "`" . $x . "`";
   }, $selectCols);
 
   $sel = implode(',', $wrapped);
 
-  $rs  = $mysqli->query("SELECT $sel FROM `users` ORDER BY `$idCol` ASC LIMIT 1000");
+  // Jalankan Query
+  $rs = $mysqli->query("SELECT $sel FROM `users` ORDER BY `$idCol` ASC LIMIT 1000");
 
   $out = [];
   while ($row = $rs->fetch_assoc()) {
     $id = (int) $row[$idCol];
 
+    // Ambil Nama
     $nama = null;
     foreach ($nameCandidates as $c) {
       if (isset($row[$c]) && trim((string)$row[$c]) !== '') {
@@ -101,22 +112,29 @@ try {
     }
     if ($nama === null) $nama = 'User#'.$id;
 
+    // Ambil Gaji
     $gaji = 0;
-    if ($gajiCol && array_key_exists($gajiCol, $row)
-        && $row[$gajiCol] !== null && $row[$gajiCol] !== '') {
+    if ($gajiCol && isset($row[$gajiCol]) && $row[$gajiCol] !== '') {
       $gaji = (int)$row[$gajiCol];
     }
 
+    // 🔥 UPDATE: Ambil Posisi
+    $posisi = '';
+    if ($roleCol && isset($row[$roleCol])) {
+      $posisi = (string)$row[$roleCol];
+    }
+
     $out[] = [
-      "id"   => $id,
-      "nama" => $nama,
-      "gaji" => $gaji,
+      "id"     => $id,
+      "nama"   => $nama,
+      "gaji"   => $gaji,
+      "posisi" => $posisi // <-- Kirim data posisi ke React Native
     ];
   }
 
   echo json_encode(["success" => true, "data" => $out], JSON_UNESCAPED_UNICODE);
+
 } catch (Throwable $e) {
-  // Biar nggak cuma HTTP ERROR 500 generik, tapi kirim JSON yang bisa dibaca di app
   http_response_code(500);
   error_log("gaji_users.php ERROR: " . $e->getMessage());
   echo json_encode([
